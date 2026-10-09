@@ -18,7 +18,7 @@ class AnalyzeTests(unittest.TestCase):
 
         self.assertEqual(result.knee_angle, 180)
         self.assertLess(result.score, 100)
-        self.assertTrue(any("deeper" in item.lower() for item in result.feedback))
+        self.assertTrue(any("más" in item.lower() for item in result.feedback))
 
     def test_push_up_returns_more_than_one_form_correction(self) -> None:
         request = PoseRequest(
@@ -35,8 +35,8 @@ class AnalyzeTests(unittest.TestCase):
         result = analyze(request)
 
         self.assertGreaterEqual(len(result.feedback), 2)
-        self.assertTrue(any("elbow" in item.lower() for item in result.feedback))
-        self.assertTrue(any("line" in item.lower() for item in result.feedback))
+        self.assertTrue(any("codos" in item.lower() for item in result.feedback))
+        self.assertTrue(any("línea" in item.lower() for item in result.feedback))
 
     def test_unreliable_landmarks_do_not_produce_a_form_score(self) -> None:
         request = PoseRequest(
@@ -69,6 +69,22 @@ class AnalyzeTests(unittest.TestCase):
         self.assertTrue(result.analyzed)
         self.assertGreaterEqual(result.score, 90)
         self.assertEqual(len(result.feedback), 1)
+
+    def test_deadlift_returns_a_hip_hinge_correction(self) -> None:
+        request = PoseRequest(
+            exercise="deadlift",
+            points=[
+                Point(name="left_shoulder", x=0.1, y=0.1, confidence=1),
+                Point(name="left_hip", x=0.3, y=0.1, confidence=1),
+                Point(name="left_knee", x=0.5, y=0.1, confidence=1),
+            ],
+        )
+
+        result = analyze(request)
+
+        self.assertTrue(result.analyzed)
+        self.assertEqual(result.angles["hip_hinge"], 180)
+        self.assertTrue(any("cadera" in item.lower() for item in result.feedback))
 
 
 if __name__ == "__main__":

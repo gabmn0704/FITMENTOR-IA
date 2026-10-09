@@ -103,10 +103,18 @@ def analyze(request: PoseRequest) -> PoseResponse:
     )
 
     if selected is None:
-        visible_names = ", ".join(required_joints)
+        joint_labels = {
+            "shoulder": "hombros",
+            "elbow": "codos",
+            "wrist": "muñecas",
+            "hip": "caderas",
+            "knee": "rodillas",
+            "ankle": "tobillos",
+        }
+        visible_names = ", ".join(joint_labels[name] for name in required_joints)
         return PoseResponse(
             score=0,
-            feedback=[f"Move into the camera frame and keep your {visible_names} visible."],
+            feedback=[f"Colócate dentro del encuadre y mantén visibles: {visible_names}."],
             confidence=overall_confidence,
             analyzed=False,
         )
@@ -121,20 +129,20 @@ def analyze(request: PoseRequest) -> PoseResponse:
         knee_angle = angle(*selected, width, height)
         angles["knee"] = knee_angle
         if knee_angle > 115:
-            corrections.append("Squat a little deeper while keeping your heels grounded.")
+            corrections.append("Baja un poco más y mantén los talones apoyados.")
             deduction += min(55, (knee_angle - 115) * 0.65)
         elif knee_angle < 65:
-            corrections.append("Reduce your squat depth and keep the movement controlled.")
+            corrections.append("Reduce la profundidad y mantén el movimiento controlado.")
             deduction += min(40, (65 - knee_angle) * 0.7)
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)
         angles["elbow"] = elbow_angle
         if elbow_angle > 110:
-            corrections.append("Lower with control and bend your elbows through a comfortable range.")
+            corrections.append("Baja con control y flexiona los codos en un rango cómodo.")
             deduction += min(35, (elbow_angle - 110) * 0.35)
         elif elbow_angle < 65:
-            corrections.append("Reduce the depth until you can keep your shoulders stable.")
+            corrections.append("Reduce la profundidad y mantén los hombros estables.")
             deduction += min(35, (65 - elbow_angle) * 0.7)
         alignment = select_joints(by_name, ("shoulder", "hip", "ankle"))
         if alignment is not None:
@@ -142,7 +150,7 @@ def analyze(request: PoseRequest) -> PoseResponse:
             if deviation is not None:
                 angles["body_line_deviation"] = deviation
                 if deviation > 0.1:
-                    corrections.append("Keep your shoulders, hips, and ankles in one straight line.")
+                    corrections.append("Mantén hombros, cadera y tobillos en línea recta.")
                     deduction += min(40, (deviation - 0.1) * 120)
 
     elif request.exercise == "plank":
@@ -150,21 +158,21 @@ def analyze(request: PoseRequest) -> PoseResponse:
         if deviation is not None:
             angles["body_line_deviation"] = deviation
             if deviation > 0.08:
-                corrections.append("Align your shoulders, hips, and ankles in one straight line.")
+                corrections.append("Alinea hombros, cadera y tobillos en línea recta.")
                 deduction += min(55, (deviation - 0.08) * 150)
 
     else:
         hip_angle = angle(*selected, width, height)
         angles["hip_hinge"] = hip_angle
         if hip_angle > 145:
-            corrections.append("Push your hips back and hinge forward with a softly bent knee.")
+            corrections.append("Lleva la cadera atrás e inclina el torso con las rodillas ligeramente flexionadas.")
             deduction += min(45, (hip_angle - 145) * 0.8)
         elif hip_angle < 45:
-            corrections.append("Use a smaller hip hinge and keep your back stable.")
+            corrections.append("Reduce la inclinación y mantén la espalda estable.")
             deduction += min(45, (45 - hip_angle) * 0.8)
 
     if not corrections:
-        corrections.append("Good position. Keep the movement controlled and breathe steadily.")
+        corrections.append("Buena posición. Muévete con control y mantén una respiración constante.")
 
     score = round(max(0.0, min(100.0, overall_confidence * 100 - deduction)), 2)
     return PoseResponse(
