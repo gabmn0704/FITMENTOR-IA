@@ -1,12 +1,16 @@
+import os
 from math import acos, degrees, hypot
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, StringConstraints
 
+from app.coach import CoachAnswer, CoachContext, answer_coach
 from app.reps import Phase, RepSessionStore
 
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 sessions = RepSessionStore()
 
 Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
@@ -33,6 +37,14 @@ class PoseRequest(BaseModel):
     frame_width: int = Field(default=16, gt=0)
     frame_height: int = Field(default=9, gt=0)
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class CoachRequest(BaseModel):
+    question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+    ]
+    context: CoachContext | None = None
 
 
 class PoseResponse(BaseModel):
@@ -229,3 +241,9 @@ def analyze_endpoint(request: PoseRequest) -> PoseResponse:
     response, primary_angle = evaluate(request)
     update = sessions.update(request.session_id, request.exercise, primary_angle)
     return response.model_copy(update={"phase": update.phase, "reps": update.reps})
+
+
+@app.post("/coach", response_model=CoachAnswer)
+def coach(request: CoachRequest) -> CoachAnswer:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
+    return answer_coach(request.question, request.context, api_key)
