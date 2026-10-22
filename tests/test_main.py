@@ -1,6 +1,6 @@
 import unittest
 
-from app.main import Point, PoseRequest, analyze
+from app.main import Point, PoseRequest, analyze, angle, line_deviation
 
 
 class AnalyzeTests(unittest.TestCase):
@@ -109,6 +109,125 @@ class AnalyzeTests(unittest.TestCase):
         self.assertAlmostEqual(result.knee_angle, 60, delta=0.5)
         self.assertLess(result.score, 100)
         self.assertTrue(any("reduce la profundidad" in item.lower() for item in result.feedback))
+
+
+class GeometryTests(unittest.TestCase):
+    def test_right_angle_and_straight_line(self) -> None:
+        origin = Point(name="v", x=0, y=0, confidence=1)
+        self.assertEqual(angle(Point(name="a", x=1, y=0, confidence=1), origin, Point(name="b", x=0, y=1, confidence=1), 1, 1), 90)
+        center = Point(name="v", x=0.5, y=0.5, confidence=1)
+        self.assertEqual(angle(Point(name="a", x=1, y=0.5, confidence=1), center, Point(name="b", x=0, y=0.5, confidence=1), 1, 1), 180)
+
+    def test_angle_respects_frame_aspect_ratio(self) -> None:
+        origin = Point(name="v", x=0, y=0, confidence=1)
+        first = Point(name="a", x=1, y=0, confidence=1)
+        last = Point(name="b", x=1, y=1, confidence=1)
+        self.assertAlmostEqual(angle(first, origin, last, 1, 1), 45, places=2)
+        # Con un encuadre 2:1 el segmento vertical se ve más corto: el ángulo baja a ~26.57.
+        self.assertAlmostEqual(angle(first, origin, last, 2, 1), 26.57, places=2)
+
+    def test_zero_length_segment_returns_zero_angle(self) -> None:
+        origin = Point(name="v", x=0.5, y=0.5, confidence=1)
+        self.assertEqual(angle(origin, origin, Point(name="b", x=1, y=1, confidence=1), 16, 9), 0.0)
+
+    def test_line_deviation_measures_distance_from_shoulder_ankle_line(self) -> None:
+        shoulder = Point(name="s", x=0, y=0, confidence=1)
+        hip = Point(name="h", x=0.5, y=0.2, confidence=1)
+        ankle = Point(name="a", x=1, y=0, confidence=1)
+        self.assertAlmostEqual(line_deviation(shoulder, hip, ankle, 1, 1), 0.2, places=3)
+
+    def test_line_deviation_is_none_when_endpoints_coincide(self) -> None:
+        same = Point(name="s", x=0.3, y=0.3, confidence=1)
+        hip = Point(name="h", x=0.5, y=0.5, confidence=1)
+        self.assertIsNone(line_deviation(same, hip, same, 16, 9))
+
+
+class ExerciseCoverageTests(unittest.TestCase):
+    def test_squat_too_deep_asks_to_reduce_depth(self) -> None:
+        # Rodilla a 60 grados.
+        result = analyze(
+            PoseRequest(
+                exercise="squat",
+                points=[
+                    Point(name="hip", x=0.5, y=0.1, confidence=1),
+                    Point(name="knee", x=0.5, y=0.5, confidence=1),
+                    Point(name="ankle", x=0.76, y=0.233, confidence=1),
+                ],
+            )
+        )
+
+        self.assertAlmostEqual(result.knee_angle, 60, delta=0.5)
+        self.assertTrue(any("reduce la profundidad" in item.lower() for item in result.feedback))
+
+    def test_deadlift_too_deep_asks_to_reduce_lean(self) -> None:
+        # Bisagra de cadera a 30 grados.
+        result = analyze(
+            PoseRequest(
+                exercise="deadlift",
+                points=[
+                    Point(name="shoulder", x=0.5, y=0.1, confidence=1),
+                    Point(name="hip", x=0.5, y=0.5, confidence=1),
+                    Point(name="knee", x=0.625, y=0.115, confidence=1),
+                ],
+            )
+        )
+
+        self.assertAlmostEqual(result.angles["hip_hinge"], 30, delta=0.5)
+        self.assertTrue(any("reduce la inclinación" in item.lower() for item in result.feedback))
+
+    def test_misaligned_plank_is_penalised(self) -> None:
+        result = analyze(
+            PoseRequest(
+                exercise="plank",
+                points=[
+                    Point(name="shoulder", x=0.1, y=0.1, confidence=1),
+                    Point(name="hip", x=0.5, y=0.3, confidence=1),
+                    Point(name="ankle", x=0.9, y=0.1, confidence=1),
+                ],
+            )
+        )
+
+        self.assertTrue(result.analyzed)
+        self.assertLess(result.score, 100)
+        self.assertTrue(any("alinea" in item.lower() for item in result.feedback))
+
+    def test_right_side_landmarks_are_used_when_left_is_missing(self) -> None:
+        result = analyze(
+            PoseRequest(
+                exercise="squat",
+                points=[
+                    Point(name="right_hip", x=0.5, y=0.1, confidence=1),
+                    Point(name="right_knee", x=0.5, y=0.5, confidence=1),
+                    Point(name="right_ankle", x=0.5, y=0.9, confidence=1),
+                ],
+            )
+        )
+
+        self.assertTrue(result.analyzed)
+        self.assertEqual(result.knee_angle, 180)
+
+    def test_names_are_normalised_and_highest_confidence_wins(self) -> None:
+        result = analyze(
+            PoseRequest(
+                exercise="squat",
+                points=[
+                    Point(name=" HIP ", x=0.9, y=0.9, confidence=0.3),
+                    Point(name="hip", x=0.5, y=0.1, confidence=1),
+                    Point(name="Knee", x=0.5, y=0.5, confidence=1),
+                    Point(name="ankle", x=0.5, y=0.9, confidence=1),
+                ],
+            )
+        )
+
+        self.assertTrue(result.analyzed)
+        self.assertEqual(result.knee_angle, 180)
+
+    def test_empty_points_are_not_analyzed(self) -> None:
+        result = analyze(PoseRequest(exercise="lunge", points=[]))
+
+        self.assertFalse(result.analyzed)
+        self.assertEqual(result.confidence, 0.0)
+        self.assertEqual(result.score, 0)
 
 
 def lunge_request(
