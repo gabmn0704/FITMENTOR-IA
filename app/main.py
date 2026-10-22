@@ -4,10 +4,20 @@ from typing import Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from app.reps import Phase, RepSessionStore
+
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0")
+sessions = RepSessionStore()
 
 Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
 MINIMUM_CONFIDENCE = 0.55
+# Ángulo principal (clave de `angles`) que alimenta el contador de repeticiones.
+PRIMARY_ANGLE_KEYS: dict[str, str] = {
+    "squat": "knee",
+    "lunge": "knee",
+    "push_up": "elbow",
+    "deadlift": "hip_hinge",
+}
 
 
 class Point(BaseModel):
@@ -22,6 +32,7 @@ class PoseRequest(BaseModel):
     points: list[Point]
     frame_width: int = Field(default=16, gt=0)
     frame_height: int = Field(default=9, gt=0)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PoseResponse(BaseModel):
@@ -31,6 +42,9 @@ class PoseResponse(BaseModel):
     angles: dict[str, float] = Field(default_factory=dict)
     confidence: float
     analyzed: bool
+    phase: Phase = "ready"
+    reps: int = 0
+    message: str = ""
 
 
 def angle(first: Point, vertex: Point, last: Point, frame_width: int, frame_height: int) -> float:
@@ -77,8 +91,8 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/analyze", response_model=PoseResponse)
-def analyze(request: PoseRequest) -> PoseResponse:
+def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
+    """Analiza un frame. Devuelve la respuesta y el ángulo principal para el contador de reps."""
     by_name: dict[str, Point] = {}
     for point in request.points:
         name = point.name.strip().lower()
@@ -113,11 +127,16 @@ def analyze(request: PoseRequest) -> PoseResponse:
             "ankle": "tobillos",
         }
         visible_names = ", ".join(joint_labels[name] for name in required_joints)
-        return PoseResponse(
-            score=0,
-            feedback=[f"Colócate dentro del encuadre y mantén visibles: {visible_names}."],
-            confidence=overall_confidence,
-            analyzed=False,
+        feedback = [f"Colócate dentro del encuadre y mantén visibles: {visible_names}."]
+        return (
+            PoseResponse(
+                score=0,
+                feedback=feedback,
+                confidence=overall_confidence,
+                analyzed=False,
+                message=" ".join(feedback),
+            ),
+            None,
         )
 
     width, height = request.frame_width, request.frame_height
@@ -186,11 +205,27 @@ def analyze(request: PoseRequest) -> PoseResponse:
         corrections.append("Buena posición. Muévete con control y mantén una respiración constante.")
 
     score = round(max(0.0, min(100.0, overall_confidence * 100 - deduction)), 2)
-    return PoseResponse(
+    primary_key = PRIMARY_ANGLE_KEYS.get(request.exercise)
+    primary_angle = angles.get(primary_key) if primary_key else None
+    response = PoseResponse(
         score=score,
         feedback=corrections,
         knee_angle=knee_angle,
         angles=angles,
         confidence=overall_confidence,
         analyzed=True,
+        message=" ".join(corrections),
     )
+    return response, primary_angle
+
+
+def analyze(request: PoseRequest) -> PoseResponse:
+    """Análisis de un frame sin estado de sesión (phase "ready" y reps 0 por defecto)."""
+    return evaluate(request)[0]
+
+
+@app.post("/analyze", response_model=PoseResponse)
+def analyze_endpoint(request: PoseRequest) -> PoseResponse:
+    response, primary_angle = evaluate(request)
+    update = sessions.update(request.session_id, request.exercise, primary_angle)
+    return response.model_copy(update={"phase": update.phase, "reps": update.reps})
