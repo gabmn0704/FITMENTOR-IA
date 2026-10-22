@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 .DS_Store
+.env
+# Leftovers of the discarded TypeScript attempt
+dist/
+node_modules/
