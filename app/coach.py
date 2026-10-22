@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 CLAUDE_MODEL = "claude-haiku-5-5"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-MAX_TOKENS = 300
+# Haiku 5.5 piensa por defecto y el razonamiento cuenta dentro de max_tokens: se deja margen
+# para que el texto final (máximo tres frases) no quede cortado.
+MAX_TOKENS = 1024
 TIMEOUT_SECONDS = 8.0
 
 SYSTEM_PROMPT = (
@@ -124,7 +126,8 @@ def ask_claude(
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": MAX_TOKENS,
-        # Haiku 5.5 razona por defecto; con esfuerzo bajo queda margen de tokens para el texto.
+        # Esfuerzo bajo (válido en Haiku 5.5, cuyo valor por defecto es "medium"): menos razonamiento,
+        # menor latencia y coste para respuestas cortas.
         "output_config": {"effort": "low"},
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": _user_message(question, context)}],
@@ -138,11 +141,15 @@ def ask_claude(
         response = client.post(ANTHROPIC_URL, headers=headers, json=payload)
     response.raise_for_status()
 
-    blocks = response.json().get("content", [])
+    data = response.json()
+    if data.get("stop_reason") == "refusal":
+        return None
+    # Solo los bloques "text" son la respuesta; los bloques "thinking" se ignoran.
+    blocks = data.get("content") or []
     text = "".join(
         block.get("text", "")
         for block in blocks
-        if block.get("type") == "text" and isinstance(block.get("text"), str)
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
     ).strip()
     return text or None
 

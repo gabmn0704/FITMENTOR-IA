@@ -22,14 +22,18 @@ client = TestClient(app)
 SECRET_KEY = "sk-test-secret-123"
 
 
-def claude_transport(text: str = "Mantén el pecho erguido.", status: int = 200) -> httpx.MockTransport:
+def claude_transport(
+    text: str = "Mantén el pecho erguido.",
+    status: int = 200,
+    body: dict | None = None,
+) -> httpx.MockTransport:
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["request"] = request
         if status != 200:
             return httpx.Response(status, json={"error": "boom"})
-        return httpx.Response(200, json={"content": [{"type": "text", "text": text}]})
+        return httpx.Response(200, json=body or {"content": [{"type": "text", "text": text}]})
 
     transport = httpx.MockTransport(handler)
     transport.seen = seen  # type: ignore[attr-defined]
@@ -86,9 +90,28 @@ class AnswerCoachTests(unittest.TestCase):
         self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
         body = json.loads(request.content)
         self.assertEqual(body["model"], CLAUDE_MODEL)
-        self.assertEqual(body["max_tokens"], 300)
+        self.assertEqual(body["max_tokens"], 1024)
+        self.assertEqual(body["output_config"], {"effort": "low"})
         self.assertIn("español", body["system"])
         self.assertIn("ejercicio: squat", body["messages"][0]["content"])
+
+    def test_thinking_blocks_are_ignored(self) -> None:
+        body = {
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "", "signature": "x"},
+                {"type": "text", "text": "Baja controlando."},
+            ],
+        }
+        answer = answer_coach("hola", CoachContext(), SECRET_KEY, claude_transport(body=body))
+        self.assertEqual(answer, CoachAnswer(answer="Baja controlando.", source="claude"))
+
+    def test_refusal_or_empty_text_falls_back_to_rules(self) -> None:
+        refusal = {"stop_reason": "refusal", "content": [{"type": "text", "text": "No."}]}
+        only_thinking = {"stop_reason": "max_tokens", "content": [{"type": "thinking", "thinking": ""}]}
+        for body in (refusal, only_thinking):
+            answer = answer_coach("hola", CoachContext(), SECRET_KEY, claude_transport(body=body))
+            self.assertEqual(answer.source, "rules")
 
     def test_http_error_falls_back_to_rules_without_leaking_the_key(self) -> None:
         answer = answer_coach("hola", CoachContext(), SECRET_KEY, claude_transport(status=500))
