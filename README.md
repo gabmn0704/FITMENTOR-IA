@@ -52,7 +52,8 @@ Petición:
 }
 ```
 
-- `x` e `y` son coordenadas normalizadas (0 a 1). `confidence` va de 0 a 1.
+- `x` e `y` son coordenadas normalizadas (0 a 1); se admite un margen de -0.5 a 1.5 porque MediaPipe puede devolver landmarks algo fuera del encuadre. `confidence` va de 0 a 1.
+- Límites: como máximo 64 puntos, `name` de 1 a 40 caracteres, `frame_width` ≤ 7680 y `frame_height` ≤ 4320.
 - Los nombres pueden ser genéricos (`hip`) o por lado (`left_hip`, `right_hip`). Se normalizan a minúsculas y, si hay duplicados, se usa el de mayor confianza.
 - `frame_width` y `frame_height` (opcionales, por defecto 16 y 9) conservan la geometría del ángulo.
 - `session_id` (opcional, 1 a 128 caracteres) activa el conteo de repeticiones de esa sesión.
@@ -113,7 +114,7 @@ Respuesta:
 { "answer": "En la plancha contrae abdomen y glúteos para que la cadera no caiga ni suba.", "source": "rules" }
 ```
 
-- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, máximo 300 tokens, respuesta en español y concisa, sin diagnósticos médicos). `source` es `claude`.
+- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, `max_tokens` 1024 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; sólo se usan los bloques `text` y una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas; respuesta en español y concisa, sin diagnósticos médicos). `source` es `claude`.
 - Sin clave, si la llamada falla o si la respuesta llega vacía, se usan reglas (consejos por palabra clave, por ejercicio y por puntuación; máximo tres consejos). `source` es `rules`.
 
 ### Errores de validación
