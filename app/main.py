@@ -24,18 +24,27 @@ PRIMARY_ANGLE_KEYS: dict[str, str] = {
 }
 
 
+# Límites de entrada: MediaPipe produce 33 landmarks; el backend descarta frames con más de 64.
+MAX_POINTS = 64
+MAX_NAME_LENGTH = 40
+MAX_FRAME_WIDTH = 7680
+MAX_FRAME_HEIGHT = 4320
+
+
 class Point(BaseModel):
-    name: str = Field(min_length=1)
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
+    name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
+    # Coordenadas normalizadas. MediaPipe puede devolver landmarks algo fuera del encuadre
+    # (p. ej. tobillos cortados), así que se admite un margen en lugar de rechazar el frame.
+    x: float = Field(ge=-0.5, le=1.5)
+    y: float = Field(ge=-0.5, le=1.5)
     confidence: float = Field(ge=0, le=1)
 
 
 class PoseRequest(BaseModel):
     exercise: Exercise
-    points: list[Point]
-    frame_width: int = Field(default=16, gt=0)
-    frame_height: int = Field(default=9, gt=0)
+    points: list[Point] = Field(max_length=MAX_POINTS)
+    frame_width: int = Field(default=16, gt=0, le=MAX_FRAME_WIDTH)
+    frame_height: int = Field(default=9, gt=0, le=MAX_FRAME_HEIGHT)
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 

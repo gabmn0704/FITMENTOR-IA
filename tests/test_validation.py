@@ -17,8 +17,31 @@ class AnalyzeValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_out_of_range_coordinates_are_rejected(self) -> None:
-        point = {**VALID_POINT, "x": 1.5}
+        point = {**VALID_POINT, "x": 1.6}
         response = client.post("/analyze", json={"exercise": "squat", "points": [point]})
+        self.assertEqual(response.status_code, 422)
+
+    def test_slightly_off_frame_landmarks_are_accepted(self) -> None:
+        point = {**VALID_POINT, "y": 1.05}
+        response = client.post("/analyze", json={"exercise": "squat", "points": [VALID_POINT, point]})
+        self.assertEqual(response.status_code, 200)
+
+    def test_more_than_64_points_are_rejected(self) -> None:
+        response = client.post("/analyze", json={"exercise": "squat", "points": [VALID_POINT] * 65})
+        self.assertEqual(response.status_code, 422)
+
+    def test_64_points_are_accepted(self) -> None:
+        response = client.post("/analyze", json={"exercise": "squat", "points": [VALID_POINT] * 64})
+        self.assertEqual(response.status_code, 200)
+
+    def test_long_point_name_is_rejected(self) -> None:
+        point = {**VALID_POINT, "name": "a" * 41}
+        response = client.post("/analyze", json={"exercise": "squat", "points": [point]})
+        self.assertEqual(response.status_code, 422)
+
+    def test_huge_frame_size_is_rejected(self) -> None:
+        body = {"exercise": "squat", "points": [VALID_POINT], "frame_width": 100_000}
+        response = client.post("/analyze", json=body)
         self.assertEqual(response.status_code, 422)
 
     def test_confidence_must_be_between_zero_and_one(self) -> None:
