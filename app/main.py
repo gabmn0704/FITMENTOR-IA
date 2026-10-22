@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0")
 
-Exercise = Literal["squat", "push_up", "plank", "deadlift"]
+Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
 MINIMUM_CONFIDENCE = 0.55
 
 
@@ -91,6 +91,7 @@ def analyze(request: PoseRequest) -> PoseResponse:
         "push_up": ("shoulder", "elbow", "wrist"),
         "plank": ("shoulder", "hip", "ankle"),
         "deadlift": ("shoulder", "hip", "knee"),
+        "lunge": ("hip", "knee", "ankle"),
     }[request.exercise]
     selected = select_joints(by_name, required_joints)
     overall_confidence = round(
@@ -134,6 +135,16 @@ def analyze(request: PoseRequest) -> PoseResponse:
         elif knee_angle < 65:
             corrections.append("Reduce la profundidad y mantén el movimiento controlado.")
             deduction += min(40, (65 - knee_angle) * 0.7)
+
+    elif request.exercise == "lunge":
+        knee_angle = angle(*selected, width, height)
+        angles["knee"] = knee_angle
+        if knee_angle > 100:
+            corrections.append("Baja un poco más controlando la rodilla delantera.")
+            deduction += min(45, (knee_angle - 100) * 0.6)
+        elif knee_angle < 80:
+            corrections.append("Reduce la profundidad y mantén la rodilla alineada con el pie.")
+            deduction += min(40, (80 - knee_angle) * 0.7)
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)

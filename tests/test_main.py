@@ -86,6 +86,47 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(result.angles["hip_hinge"], 180)
         self.assertTrue(any("cadera" in item.lower() for item in result.feedback))
 
+    def test_lunge_at_ideal_depth_has_no_correction(self) -> None:
+        # Rodilla a 90 grados: dentro del rango ideal 80-100.
+        result = analyze(lunge_request(hip=(0.5, 0.2), knee=(0.5, 0.5), ankle=(0.8, 0.5)))
+
+        self.assertTrue(result.analyzed)
+        self.assertAlmostEqual(result.knee_angle, 90, delta=0.5)
+        self.assertEqual(result.score, 100)
+        self.assertTrue(any("buena posición" in item.lower() for item in result.feedback))
+
+    def test_lunge_too_shallow_asks_for_more_depth(self) -> None:
+        result = analyze(lunge_request(hip=(0.5, 0.1), knee=(0.5, 0.5), ankle=(0.5, 0.9)))
+
+        self.assertEqual(result.knee_angle, 180)
+        self.assertLess(result.score, 100)
+        self.assertTrue(any("baja un poco más" in item.lower() for item in result.feedback))
+
+    def test_lunge_too_deep_asks_to_reduce_depth(self) -> None:
+        # Rodilla a 60 grados: por debajo del rango ideal.
+        result = analyze(lunge_request(hip=(0.5, 0.1), knee=(0.5, 0.5), ankle=(0.76, 0.233)))
+
+        self.assertAlmostEqual(result.knee_angle, 60, delta=0.5)
+        self.assertLess(result.score, 100)
+        self.assertTrue(any("reduce la profundidad" in item.lower() for item in result.feedback))
+
+
+def lunge_request(
+    hip: tuple[float, float],
+    knee: tuple[float, float],
+    ankle: tuple[float, float],
+) -> PoseRequest:
+    return PoseRequest(
+        exercise="lunge",
+        points=[
+            Point(name="left_hip", x=hip[0], y=hip[1], confidence=1),
+            Point(name="left_knee", x=knee[0], y=knee[1], confidence=1),
+            Point(name="left_ankle", x=ankle[0], y=ankle[1], confidence=1),
+        ],
+        frame_width=16,
+        frame_height=9,
+    )
+
 
 if __name__ == "__main__":
     unittest.main()
