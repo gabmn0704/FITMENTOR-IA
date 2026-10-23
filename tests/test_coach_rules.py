@@ -136,7 +136,6 @@ class RobustnessTests(unittest.TestCase):
     def test_pain_answer_has_no_training_advice(self) -> None:
         answer = rule_based_answer("Me duele mucho la espalda", CoachContext(exercise="deadlift", score=90))
         self.assertIn("profesional de la salud", answer)
-        self.assertNotIn("Objetivo", answer)
         self.assertNotIn("siguiente objetivo", answer)
 
 

@@ -89,11 +89,11 @@ Respuesta:
 | `deadlift` | bisagra de cadera | > 155° | < 115° | cadera fuera de 45°–145° |
 | `plank` | — (isométrico) | — | — | alineación; `phase` siempre `hold` y `reps` 0 |
 
-Máquina de estados por sesión: `ready` → `up` → `down` → `bottom` → `up` suma **+1 repetición**. El ángulo se suaviza con la **mediana** de las últimas 5 muestras, de modo que un pico o un frame perdido aislado no altera el conteo.
+Máquina de estados por sesión: `ready` → `up` → `down` → `bottom` → `up` suma **+1 repetición**. No hay suavizado de media ni de mediana: con frames cada ~340 ms, un suavizado de varias muestras pierde repeticiones cortas. En su lugar, un **filtro de saltos** retiene una muestra que cambia más de 60° respecto a la anterior y solo la acepta si la siguiente la confirma; así un pico aislado no cuenta y un movimiento real no se retrasa.
 
 - Histéresis: entrar en `bottom` exige bajar del umbral de fondo y volver a `up` exige superar el umbral alto; la franja intermedia no cambia de estado.
-- Las muestras no medibles (ángulo ausente, no finito o fuera de 0–180) no entran en la ventana.
-- Un contador que empieza en el fondo no cuenta la primera subida: hay que haber estado arriba antes para que una repetición sume.
+- Las muestras no medibles (ángulo ausente o fuera de 10–180°; 0° suele ser un landmark degenerado) no mueven la máquina.
+- Un contador que empieza fuera de la posición alta no cuenta la primera subida: hay que haber estado arriba antes. El peso muerto es la excepción (`starts_at_bottom`): empieza en el suelo y su primera subida ya cuenta.
 - Una repetición incompleta (no llega a la posición alta) no suma. Mientras el ángulo está entre el fondo y la posición alta, `phase` sigue en `down` o `bottom`.
 
 - Sin `session_id`, solo se evalúa el frame: `reps` es 0 y `phase` describe ese frame.
@@ -122,12 +122,12 @@ Respuesta:
 
 - Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, `max_tokens` 1024 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; solo se usan los bloques `text`). El prompt de sistema fija el rol de coach de técnica, respuestas en español de máximo tres frases, límites de seguridad (dolor → parar y consultar a un profesional; nutrición solo general) y trata la pregunta como datos: va entre `<pregunta>` y las métricas de la sesión entre `<sesion>`. Una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas. `source` es `claude`.
 - Sin clave, si la llamada falla o si la respuesta llega vacía, se usan reglas. `source` es `rules`. Las reglas responden según la intención de la pregunta, en este orden:
-  1. **Dolor, lesión, mareo u opresión en el pecho**: se recomienda parar y consultar a un profesional de la salud, sin consejos de entrenamiento.
-  2. **Fuera de tema o intento de cambiar las instrucciones**: se redirige al entrenamiento (técnica, descansos, progresión, nutrición básica) con un consejo del ejercicio actual.
+  1. **Dolor, lesión, mareo u opresión en el pecho** (se detecta antes de llamar a Claude, así que también en modo Claude): se recomienda parar y consultar a un profesional de la salud, sin consejos de entrenamiento. `source` es `rules`.
+  2. **Intento de cambiar las instrucciones** (ignora, omite, finge, system prompt, API key, etc.): se redirige al entrenamiento con un consejo del ejercicio actual. Ninguna otra pregunta se trata como ataque.
   3. **Nutrición**: orientación general (proteína, hidratación, verduras) con aviso de que no es consejo médico ni nutricional personalizado.
   4. **Descanso**: tiempos entre series y entre sesiones según el nivel, y aviso de consultar si las agujetas persisten o el dolor es agudo.
   5. **Técnica**: consejos por palabra clave (coincidencia al inicio de palabra), por ejercicio y por métricas (precisión por tramos, repeticiones si se preguntan, ángulo medio fuera del rango esperado), siempre con un **siguiente objetivo** según el nivel (repeticiones o segundos y precisión mínima).
-  6. **Saludo o pregunta sobre el coach**: presentación breve. Cualquier otra pregunta recibe el consejo general, nunca una respuesta vacía.
+  6. **Saludo o pregunta sobre el coach**: presentación breve (con el consejo del ejercicio de contexto si lo hay). Cualquier otra pregunta fuera de tema recibe el consejo general del ejercicio o del entrenamiento, nunca una respuesta vacía.
 
 ### Errores de validación
 

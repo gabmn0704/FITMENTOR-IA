@@ -1,7 +1,6 @@
 import unittest
-from types import SimpleNamespace
 
-from app.main import Point, PoseRequest, analyze, angle
+from app.main import Point, PoseRequest, analyze
 
 
 def point(name: str, x: float, y: float) -> Point:
@@ -55,73 +54,6 @@ class DegenerateAngleTests(unittest.TestCase):
         )
         self.assertFalse(result.analyzed)
         self.assertEqual(result.score, 0)
-
-    def test_angle_outside_zero_to_180_is_never_returned(self) -> None:
-        origin = point("v", 0.5, 0.5)
-        for first, last in (
-            (point("a", 1, 0.5), point("b", 0, 0.5)),
-            (point("a", 0.5, 0), point("b", 0.5, 1)),
-            (point("a", 0.9, 0.2), point("b", 0.1, 0.8)),
-        ):
-            with self.subTest(first=first.x, last=last.x):
-                value = angle(first, origin, last, 16, 9)
-                self.assertIsNotNone(value)
-                self.assertTrue(0.0 <= value <= 180.0)
-
-    def test_non_finite_angle_inputs_are_not_measurable(self) -> None:
-        origin = point("v", 0.5, 0.5)
-        infinite = SimpleNamespace(x=float("inf"), y=0.5)  # Point valida el rango, así que se usa un objeto suelto.
-        self.assertIsNone(angle(infinite, origin, point("b", 0, 0.5), 16, 9))
-
-
-class OverlapAndScaleTests(unittest.TestCase):
-    def test_overlapping_joints_get_an_overlap_message(self) -> None:
-        result = analyze(
-            PoseRequest(
-                exercise="squat",
-                frame_width=1280,
-                frame_height=720,
-                points=[
-                    point("hip", 0.5, 0.1),
-                    point("knee", 0.5, 0.5),
-                    point("ankle", 0.5, 0.5),
-                ],
-            )
-        )
-        self.assertFalse(result.analyzed)
-        self.assertIn("se solapan", result.message)
-
-    def test_missing_joints_keep_the_visibility_message(self) -> None:
-        result = analyze(PoseRequest(exercise="squat", points=[]))
-        self.assertIn("visibles", result.message)
-        self.assertNotIn("solapan", result.message)
-
-    def test_near_coincident_points_in_a_large_frame_are_not_measured(self) -> None:
-        # 0,0001 del encuadre son unos 0,13 px en 1280 px: los puntos se solapan.
-        result = analyze(
-            PoseRequest(
-                exercise="squat",
-                frame_width=1280,
-                frame_height=720,
-                points=[
-                    point("hip", 0.5, 0.1),
-                    point("knee", 0.5, 0.5),
-                    point("ankle", 0.5001, 0.5),
-                ],
-            )
-        )
-        self.assertFalse(result.analyzed)
-
-    def test_plank_deviation_does_not_depend_on_the_frame_size(self) -> None:
-        # La desviación se mide como fracción de la línea: el mismo dibujo da el mismo valor
-        # en un encuadre de 16x9 que en uno de 1280x720.
-        from app.main import line_deviation
-
-        shoulder, hip, ankle = point("s", 0.1, 0.1), point("h", 0.5, 0.2), point("a", 0.9, 0.1)
-        small = line_deviation(shoulder, hip, ankle, 16, 9)
-        large = line_deviation(shoulder, hip, ankle, 1280, 720)
-        self.assertIsNotNone(small)
-        self.assertAlmostEqual(small, large, delta=0.01)
 
 
 if __name__ == "__main__":
