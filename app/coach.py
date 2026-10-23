@@ -49,6 +49,9 @@ EXERCISE_ALIASES: dict[str, str] = {
     "flexiones": "push_up",
     "plank": "plank",
     "plancha": "plank",
+    "planchas": "plank",
+    "squats": "squat",
+    "planks": "plank",
     "deadlift": "deadlift",
     "peso muerto": "deadlift",
     "lunge": "lunge",
@@ -213,7 +216,6 @@ NUTRITION_STEMS = (
     "nutri",
     "calori",
     "hidrat",
-    "agua",
     "suplement",
     "creatina",
     "alimenta",
@@ -225,13 +227,13 @@ REST_STEMS = (
     "dormi",
     "sueno",
     "agujet",
-    "dias",
     "frecuencia",
     "cada cuanto",
-    "cuanto tiempo",
     "entre series",
-    "semana",
+    "por semana",
 )
+# Palabras completas (no raíces): "agua" no debe activar nutrición en "aguantar".
+NUTRITION_WORDS = ("agua",)
 PROGRESSION_STEMS = (
     "progres",
     "siguiente nivel",
@@ -334,9 +336,14 @@ def _canonical_exercise(value: str | None) -> str | None:
     return EXERCISE_ALIASES.get(_key(value))
 
 
+def _has_word(text: str, words: tuple[str, ...]) -> bool:
+    return any(re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", text) for word in words)
+
+
 def _exercise_in_text(text: str) -> str | None:
+    # Con límite final: "flexiono" o "flexiona" no son "flexiones".
     for alias, exercise in sorted(EXERCISE_ALIASES.items(), key=lambda item: -len(item[0])):
-        if re.search(rf"(?<![a-z]){re.escape(alias)}", text):
+        if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", text):
             return exercise
     return None
 
@@ -426,7 +433,7 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
         return PAIN_ADVICE
     if _mentions(text, INJECTION_STEMS):
         return _join(OFF_TOPIC_REPLY, EXERCISE_TIPS.get(exercise or "", DEFAULT_TIP))
-    if _mentions(text, NUTRITION_STEMS):
+    if _mentions(text, NUTRITION_STEMS) or _has_word(text, NUTRITION_WORDS):
         return NUTRITION_ADVICE
     if _mentions(text, REST_STEMS):
         return _join(REST_ADVICE.get(level or "", REST_ADVICE_DEFAULT), REST_SAFETY)
@@ -447,7 +454,7 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
     angle_note = _angle_note(context, exercise)
     if angle_note:
         extras.append(angle_note)
-    if context.reps is not None and exercise != "plank" and re.search(r"repet|cuant", text):
+    if context.reps is not None and exercise != "plank" and re.search(r"repet|cuantas|reps?", text):
         extras.append(f"Llevas {context.reps} repeticiones; mantén la misma calidad en cada una.")
     goal = _next_goal(exercise, level) if exercise else None
     if _mentions(text, PROGRESSION_STEMS):
