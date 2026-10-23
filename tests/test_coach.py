@@ -54,10 +54,13 @@ class RulesTests(unittest.TestCase):
 
     def test_exercise_tip_is_used_when_no_keyword_matches(self) -> None:
         answer = rule_based_answer("¿Cómo lo hago?", CoachContext(exercise="lunge"))
-        self.assertEqual(answer, EXERCISE_TIPS["lunge"])
+        self.assertIn(EXERCISE_TIPS["lunge"], answer)
 
     def test_default_tip_when_nothing_matches(self) -> None:
-        self.assertEqual(rule_based_answer("hola"), DEFAULT_TIP)
+        self.assertEqual(rule_based_answer("¿Quién ganó el mundial?"), DEFAULT_TIP)
+
+    def test_greeting_introduces_the_coach(self) -> None:
+        self.assertIn("coach", rule_based_answer("hola").lower())
 
     def test_low_score_and_reps_are_mentioned(self) -> None:
         answer = rule_based_answer("¿Cuántas repeticiones llevo?", CoachContext(score=40, reps=7))

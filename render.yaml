@@ -9,3 +9,5 @@ services:
         value: "8000"
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: AI_SHARED_SECRET
+        sync: false
