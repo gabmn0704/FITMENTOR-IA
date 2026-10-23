@@ -1,6 +1,6 @@
 from collections import deque
 from dataclasses import dataclass
-from statistics import fmean
+from math import isfinite
 from threading import Lock
 from typing import Literal
 
@@ -8,20 +8,30 @@ from app.lru import LRUCache
 
 Phase = Literal["ready", "up", "down", "bottom", "hold"]
 
-SMOOTHING_WINDOW = 5
 SESSION_CAPACITY = 500
+# Ángulos válidos de las articulaciones seguidas. Por debajo de 10 grados no es fisiológico:
+# suele ser un landmark degenerado (0 grados), así que se descarta la muestra.
+MIN_ANGLE = 10.0
+MAX_ANGLE = 180.0
+# Salto máximo entre dos muestras consecutivas (frames a ~340 ms). Un movimiento real de
+# 2 s por repetición cambia unos 43 grados por muestra; un salto mayor es un pico de ruido
+# salvo que la muestra siguiente lo confirme (ver `RepCounter.update`).
+MAX_JUMP = 60.0
 
 
 @dataclass(frozen=True)
 class Thresholds:
-    """Umbrales sobre el ángulo principal suavizado.
+    """Umbrales sobre el ángulo principal.
 
     up: a partir de este valor el atleta está en posición alta (extendida).
     bottom: por debajo de este valor se considera que llegó al fondo.
+    starts_at_bottom: el movimiento empieza en el fondo (p. ej. peso muerto desde el suelo),
+        así que la primera subida ya cuenta como repetición.
     """
 
     up: float
     bottom: float
+    starts_at_bottom: bool = False
 
 
 # Ángulo principal: rodilla (squat, lunge), codo (push_up) o bisagra de cadera (deadlift).
@@ -30,7 +40,7 @@ THRESHOLDS: dict[str, Thresholds | None] = {
     "squat": Thresholds(up=150, bottom=105),
     "lunge": Thresholds(up=150, bottom=105),
     "push_up": Thresholds(up=150, bottom=90),
-    "deadlift": Thresholds(up=155, bottom=115),
+    "deadlift": Thresholds(up=155, bottom=115, starts_at_bottom=True),
     "plank": None,
 }
 
@@ -46,29 +56,56 @@ class RepCounter:
 
     Solo se cuenta una repetición al volver a la posición alta después de tocar el fondo,
     de modo que las repeticiones poco profundas no suman.
+
+    Histéresis: entrar en "bottom" exige bajar del umbral `bottom` y salir hacia "up"
+    exige superar `up`; la franja intermedia no cambia de estado. Un contador que empieza
+    fuera de la posición alta no cuenta la primera subida ("armado"), salvo que el ejercicio
+    empiece en el fondo (`starts_at_bottom`).
+
+    Sin suavizado de media ni mediana: las muestras llegan cada ~340 ms y un suavizado
+    de varias muestras pierde repeticiones cortas. Los picos aislados se filtran por salto:
+    una muestra que cambia más de `MAX_JUMP` respecto a la anterior se retiene y solo se
+    acepta si la siguiente muestra la confirma.
     """
 
     def __init__(self, exercise: str) -> None:
         self.exercise = exercise
         self._thresholds = THRESHOLDS[exercise]
-        self._window: deque[float] = deque(maxlen=SMOOTHING_WINDOW)
         self._state: Phase = "ready"
         self._reps = 0
+        self._armed = bool(self._thresholds and self._thresholds.starts_at_bottom)
+        self._last: float | None = None
+        self._pending: float | None = None
+
+    def _accept(self, angle: float) -> bool:
+        """Filtro de saltos. Devuelve True si la muestra entra en la máquina de estados."""
+        if self._last is None or abs(angle - self._last) <= MAX_JUMP:
+            self._pending = None
+            self._last = angle
+            return True
+        if self._pending is not None and abs(angle - self._pending) <= MAX_JUMP:
+            # Dos muestras seguidas coinciden: el cambio es real, no un pico.
+            self._pending = None
+            self._last = angle
+            return True
+        self._pending = angle
+        return False
 
     def update(self, angle: float | None) -> RepUpdate:
         if self._thresholds is None:
             return RepUpdate(phase="hold", reps=0)
-        if angle is None:
+        # Una muestra no medible (None o fuera de rango) no debe mover la máquina.
+        if angle is None or not isfinite(angle) or not MIN_ANGLE <= angle <= MAX_ANGLE:
+            return self._snapshot()
+        if not self._accept(angle):
             return self._snapshot()
 
-        self._window.append(angle)
-        smoothed = fmean(self._window)
-
-        if smoothed >= self._thresholds.up:
-            if self._state == "bottom":
+        if angle >= self._thresholds.up:
+            if self._state == "bottom" and self._armed:
                 self._reps += 1
             self._state = "up"
-        elif smoothed <= self._thresholds.bottom:
+            self._armed = True
+        elif angle <= self._thresholds.bottom:
             self._state = "bottom"
         elif self._state == "up":
             self._state = "down"

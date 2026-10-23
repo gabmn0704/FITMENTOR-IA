@@ -1,5 +1,5 @@
 import os
-from math import acos, degrees, hypot
+from math import acos, degrees, hypot, isfinite
 from typing import Annotated, Literal
 
 from fastapi import FastAPI
@@ -68,15 +68,31 @@ class PoseResponse(BaseModel):
     message: str = ""
 
 
-def angle(first: Point, vertex: Point, last: Point, frame_width: int, frame_height: int) -> float:
+# Longitud mínima, en píxeles del encuadre, de un segmento para medir un ángulo.
+# Por debajo, dos landmarks prácticamente se solapan y el ángulo es ruido.
+MIN_SEGMENT_PX = 1.0
+
+
+def angle(first: Point, vertex: Point, last: Point, frame_width: int, frame_height: int) -> float | None:
+    """Ángulo en grados (0 a 180) en `vertex`, o None si no es medible.
+
+    Devuelve None si alguno de los dos segmentos mide menos de `MIN_SEGMENT_PX`: un 0° falso
+    parecería una flexión total y contaría repeticiones fantasma.
+    """
     first_vector = ((first.x - vertex.x) * frame_width, (first.y - vertex.y) * frame_height)
     last_vector = ((last.x - vertex.x) * frame_width, (last.y - vertex.y) * frame_height)
-    vector_size = hypot(*first_vector) * hypot(*last_vector)
-    if vector_size == 0:
-        return 0.0
+    first_length, last_length = hypot(*first_vector), hypot(*last_vector)
+    if first_length < MIN_SEGMENT_PX or last_length < MIN_SEGMENT_PX:
+        return None
+    vector_size = first_length * last_length
+    if not isfinite(vector_size):
+        return None
     dot_product = first_vector[0] * last_vector[0] + first_vector[1] * last_vector[1]
     cosine = max(-1.0, min(1.0, dot_product / vector_size))
-    return round(degrees(acos(cosine)), 2)
+    measured = round(degrees(acos(cosine)), 2)
+    if not 0.0 <= measured <= 180.0:
+        return None
+    return measured
 
 
 def select_joints(points: dict[str, Point], names: tuple[str, ...]) -> tuple[Point, ...] | None:
@@ -101,15 +117,51 @@ def line_deviation(
     middle_x, middle_y = hip.x * frame_width, hip.y * frame_height
     end_x, end_y = ankle.x * frame_width, ankle.y * frame_height
     line_length = hypot(end_x - start_x, end_y - start_y)
-    if line_length == 0:
+    if line_length < MIN_SEGMENT_PX:
         return None
-    deviation = abs((end_x - start_x) * (start_y - middle_y) - (start_x - middle_x) * (end_y - start_y))
-    return round(deviation / line_length, 3)
+    cross = abs((end_x - start_x) * (start_y - middle_y) - (start_x - middle_x) * (end_y - start_y))
+    distance = cross / line_length  # distancia del hip a la línea, en píxeles
+    # Fracción de la longitud del segmento: no depende del tamaño del encuadre.
+    return round(distance / line_length, 3)
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+JOINT_LABELS = {
+    "shoulder": "hombros",
+    "elbow": "codos",
+    "wrist": "muñecas",
+    "hip": "caderas",
+    "knee": "rodillas",
+    "ankle": "tobillos",
+}
+
+
+def _not_analyzed(
+    confidence: float,
+    joints: tuple[str, ...],
+    overlapping: bool = False,
+) -> tuple[PoseResponse, None]:
+    """Frame sin análisis. `overlapping` indica que los puntos se solapan en la imagen."""
+    visible_names = ", ".join(JOINT_LABELS[name] for name in joints)
+    if overlapping:
+        feedback = [
+            f"Los puntos de {visible_names} se solapan en la imagen: aléjate de la cámara "
+            "o revisa que se vea el cuerpo completo."
+        ]
+    else:
+        feedback = [f"Colócate dentro del encuadre y mantén visibles: {visible_names}."]
+    response = PoseResponse(
+        score=0,
+        feedback=feedback,
+        confidence=confidence,
+        analyzed=False,
+        message=" ".join(feedback),
+    )
+    return response, None
 
 
 def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
@@ -139,26 +191,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
     )
 
     if selected is None:
-        joint_labels = {
-            "shoulder": "hombros",
-            "elbow": "codos",
-            "wrist": "muñecas",
-            "hip": "caderas",
-            "knee": "rodillas",
-            "ankle": "tobillos",
-        }
-        visible_names = ", ".join(joint_labels[name] for name in required_joints)
-        feedback = [f"Colócate dentro del encuadre y mantén visibles: {visible_names}."]
-        return (
-            PoseResponse(
-                score=0,
-                feedback=feedback,
-                confidence=overall_confidence,
-                analyzed=False,
-                message=" ".join(feedback),
-            ),
-            None,
-        )
+        return _not_analyzed(overall_confidence, required_joints)
 
     width, height = request.frame_width, request.frame_height
     angles: dict[str, float] = {}
@@ -168,6 +201,8 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
 
     if request.exercise == "squat":
         knee_angle = angle(*selected, width, height)
+        if knee_angle is None:
+            return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 115:
             corrections.append("Baja un poco más y mantén los talones apoyados.")
@@ -178,6 +213,8 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
 
     elif request.exercise == "lunge":
         knee_angle = angle(*selected, width, height)
+        if knee_angle is None:
+            return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 100:
             corrections.append("Baja un poco más controlando la rodilla delantera.")
@@ -188,6 +225,8 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)
+        if elbow_angle is None:
+            return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["elbow"] = elbow_angle
         if elbow_angle > 110:
             corrections.append("Baja con control y flexiona los codos en un rango cómodo.")
@@ -206,14 +245,17 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
 
     elif request.exercise == "plank":
         deviation = line_deviation(*selected, width, height)
-        if deviation is not None:
-            angles["body_line_deviation"] = deviation
-            if deviation > 0.08:
-                corrections.append("Alinea hombros, cadera y tobillos en línea recta.")
-                deduction += min(55, (deviation - 0.08) * 150)
+        if deviation is None:
+            return _not_analyzed(overall_confidence, required_joints, overlapping=True)
+        angles["body_line_deviation"] = deviation
+        if deviation > 0.08:
+            corrections.append("Alinea hombros, cadera y tobillos en línea recta.")
+            deduction += min(55, (deviation - 0.08) * 150)
 
     else:
         hip_angle = angle(*selected, width, height)
+        if hip_angle is None:
+            return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["hip_hinge"] = hip_angle
         if hip_angle > 145:
             corrections.append("Lleva la cadera atrás e inclina el torso con las rodillas ligeramente flexionadas.")

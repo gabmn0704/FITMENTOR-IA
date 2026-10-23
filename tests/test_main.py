@@ -116,7 +116,8 @@ class GeometryTests(unittest.TestCase):
         origin = Point(name="v", x=0, y=0, confidence=1)
         self.assertEqual(angle(Point(name="a", x=1, y=0, confidence=1), origin, Point(name="b", x=0, y=1, confidence=1), 1, 1), 90)
         center = Point(name="v", x=0.5, y=0.5, confidence=1)
-        self.assertEqual(angle(Point(name="a", x=1, y=0.5, confidence=1), center, Point(name="b", x=0, y=0.5, confidence=1), 1, 1), 180)
+        # Un encuadre de 100 px: con 1 px los segmentos de 0,5 quedarían por debajo del mínimo.
+        self.assertEqual(angle(Point(name="a", x=1, y=0.5, confidence=1), center, Point(name="b", x=0, y=0.5, confidence=1), 100, 100), 180)
 
     def test_angle_respects_frame_aspect_ratio(self) -> None:
         origin = Point(name="v", x=0, y=0, confidence=1)
@@ -126,9 +127,9 @@ class GeometryTests(unittest.TestCase):
         # Con un encuadre 2:1 el segmento vertical se ve más corto: el ángulo baja a ~26.57.
         self.assertAlmostEqual(angle(first, origin, last, 2, 1), 26.57, places=2)
 
-    def test_zero_length_segment_returns_zero_angle(self) -> None:
+    def test_zero_length_segment_is_not_measurable(self) -> None:
         origin = Point(name="v", x=0.5, y=0.5, confidence=1)
-        self.assertEqual(angle(origin, origin, Point(name="b", x=1, y=1, confidence=1), 16, 9), 0.0)
+        self.assertIsNone(angle(origin, origin, Point(name="b", x=1, y=1, confidence=1), 16, 9))
 
     def test_line_deviation_measures_distance_from_shoulder_ankle_line(self) -> None:
         shoulder = Point(name="s", x=0, y=0, confidence=1)
