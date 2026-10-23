@@ -12,6 +12,8 @@ ANTHROPIC_VERSION = "2023-06-01"
 # para que el texto final (máximo tres frases) no quede cortado.
 MAX_TOKENS = 1024
 TIMEOUT_SECONDS = 8.0
+# Límite de caracteres de la respuesta de Claude que se devuelve al cliente.
+MAX_ANSWER_CHARS = 600
 
 SYSTEM_PROMPT = (
     "Eres el coach de técnica de FitMentor, una app de entrenamiento con corrección de postura. "
@@ -182,6 +184,9 @@ INJECTION_STEMS = (
     "instrucciones anteriores",
     "instrucciones internas",
     "tus reglas",
+    "omite",
+    "disregard",
+    "pretend",
     "eres ahora",
     "actua como",
     "finge ser",
@@ -315,8 +320,15 @@ class CoachAnswer(BaseModel):
 
 
 def _normalize(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text.lower())
-    return "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+    """Forma comparable: NFKC (ancho completo -> normal), minúsculas, sin tildes ni caracteres de formato."""
+    compatible = unicodedata.normalize("NFKC", text).lower()
+    decomposed = unicodedata.normalize("NFD", compatible)
+    return "".join(char for char in decomposed if unicodedata.category(char) not in ("Mn", "Cf"))
+
+
+def _clean_field(value: str) -> str:
+    """Quita etiquetas y saltos de línea de un campo de contexto antes de incrustarlo en el prompt."""
+    return re.sub(r"[<>\r\n\t]+", " ", value).strip()
 
 
 def _key(text: str) -> str:
@@ -355,11 +367,13 @@ def _canonical_level(value: str | None) -> str | None:
 
 
 def _user_message(question: str, context: CoachContext) -> str:
+    exercise = _clean_field(context.exercise) if context.exercise is not None else None
+    level = _clean_field(context.level) if context.level is not None else None
     details = [
-        f"ejercicio: {context.exercise}" if context.exercise is not None else None,
+        f"ejercicio: {exercise}" if exercise is not None else None,
         f"puntuación: {context.score}" if context.score is not None else None,
         f"repeticiones: {context.reps}" if context.reps is not None else None,
-        f"nivel: {context.level}" if context.level is not None else None,
+        f"nivel: {level}" if level is not None else None,
         f"ángulo medio: {context.average_angle}" if context.average_angle is not None else None,
     ]
     present = [item for item in details if item is not None]
@@ -501,7 +515,18 @@ def ask_claude(
         for block in blocks
         if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
     ).strip()
-    return text or None
+    return clip_answer(text) if text else None
+
+
+def clip_answer(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
+    """Recorta una respuesta de Claude demasiado larga, preferentemente en un final de frase."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if cut >= limit // 2:
+        return head[: cut + 1].rstrip()
+    return head.rstrip()
 
 
 def answer_coach(
