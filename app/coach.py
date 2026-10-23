@@ -96,7 +96,7 @@ MEAN_ANGLE_HINTS: dict[str, tuple[float, float, str, str]] = {
         70,
         150,
         "Pasas mucho tiempo arriba: baja más en cada repetición hasta un rango cómodo.",
-        "El recorrido medio es muy corto: si bajas demasiado, reduce la profundidad.",
+        "Bajas demasiado: tu ángulo medio de rodilla es muy bajo; reduce la profundidad y controla el fondo.",
     ),
     "lunge": (
         75,
@@ -425,7 +425,9 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
     """
     context = context or CoachContext()
     text = _key(question)
-    exercise = _canonical_exercise(context.exercise) or _exercise_in_text(text)
+    # La pregunta manda: el contexto es solo respaldo (el backend envía la última sesión guardada).
+    question_exercise = _exercise_in_text(text)
+    exercise = question_exercise or _canonical_exercise(context.exercise)
     level = _canonical_level(context.level)
 
     # La seguridad va primero: con dolor no se da ningún otro consejo de entrenamiento.
@@ -439,8 +441,8 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
         return _join(REST_ADVICE.get(level or "", REST_ADVICE_DEFAULT), REST_SAFETY)
 
     keyword_tips = [tip for stems, tip in KEYWORD_TIPS if _mentions(text, stems)][:2]
-    if not keyword_tips and exercise is None and _mentions(text, GREETING_STEMS):
-        return GREETING_REPLY
+    if not keyword_tips and question_exercise is None and _mentions(text, GREETING_STEMS):
+        return _join(GREETING_REPLY, EXERCISE_TIPS[exercise]) if exercise else GREETING_REPLY
 
     body = keyword_tips + ([EXERCISE_TIPS[exercise]] if exercise else [])
     body = body[:3] or [DEFAULT_TIP]

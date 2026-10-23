@@ -18,10 +18,25 @@ class ExerciseAndLevelResolutionTests(unittest.TestCase):
         answer = rule_based_answer("Consejos para la plancha")
         self.assertIn(EXERCISE_TIPS["plank"], answer)
 
-    def test_context_exercise_wins_over_the_question(self) -> None:
+    def test_question_exercise_wins_over_the_context(self) -> None:
+        # El contexto es solo respaldo: la pregunta dice qué ejercicio se quiere.
         answer = rule_based_answer("¿Y en la zancada?", CoachContext(exercise="squat"))
+        self.assertIn(EXERCISE_TIPS["lunge"], answer)
+        self.assertNotIn(EXERCISE_TIPS["squat"], answer)
+
+    def test_context_exercise_is_used_when_the_question_names_none(self) -> None:
+        answer = rule_based_answer("¿Y ahora qué corrijo?", CoachContext(exercise="squat"))
         self.assertIn(EXERCISE_TIPS["squat"], answer)
-        self.assertNotIn(EXERCISE_TIPS["lunge"], answer)
+
+    def test_greeting_with_context_exercise_greets_first(self) -> None:
+        answer = rule_based_answer("hola", CoachContext(exercise="squat"))
+        self.assertTrue(answer.startswith("¡Hola!"))
+        self.assertIn(EXERCISE_TIPS["squat"], answer)
+
+    def test_squat_too_low_mean_angle_says_too_deep(self) -> None:
+        answer = rule_based_answer("¿Cómo lo hago?", CoachContext(exercise="squat", average_angle=50))
+        self.assertIn("Bajas demasiado", answer)
+        self.assertNotIn("recorrido", answer)
 
     def test_unknown_exercise_does_not_break_the_answer(self) -> None:
         answer = rule_based_answer("¿Cómo lo hago?", CoachContext(exercise="burpee"))
