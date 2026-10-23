@@ -116,7 +116,8 @@ class GeometryTests(unittest.TestCase):
         origin = Point(name="v", x=0, y=0, confidence=1)
         self.assertEqual(angle(Point(name="a", x=1, y=0, confidence=1), origin, Point(name="b", x=0, y=1, confidence=1), 1, 1), 90)
         center = Point(name="v", x=0.5, y=0.5, confidence=1)
-        self.assertEqual(angle(Point(name="a", x=1, y=0.5, confidence=1), center, Point(name="b", x=0, y=0.5, confidence=1), 1, 1), 180)
+        # Un encuadre de 100 px: con 1 px los segmentos de 0,5 quedarían por debajo del mínimo.
+        self.assertEqual(angle(Point(name="a", x=1, y=0.5, confidence=1), center, Point(name="b", x=0, y=0.5, confidence=1), 100, 100), 180)
 
     def test_angle_respects_frame_aspect_ratio(self) -> None:
         origin = Point(name="v", x=0, y=0, confidence=1)
