@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass
-from statistics import fmean
+from math import isfinite
+from statistics import median
 from threading import Lock
 from typing import Literal
 
@@ -8,8 +9,12 @@ from app.lru import LRUCache
 
 Phase = Literal["ready", "up", "down", "bottom", "hold"]
 
+# Mediana (no media) de las últimas muestras: un pico o un frame perdido aislado no
+# mueve el ángulo suavizado, mientras que una media lo arrastraría.
 SMOOTHING_WINDOW = 5
 SESSION_CAPACITY = 500
+MIN_ANGLE = 0.0
+MAX_ANGLE = 180.0
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,11 @@ class RepCounter:
 
     Solo se cuenta una repetición al volver a la posición alta después de tocar el fondo,
     de modo que las repeticiones poco profundas no suman.
+
+    Histéresis: entrar en "bottom" exige bajar del umbral `bottom` y salir hacia "up"
+    exige superar `up`; la franja intermedia no cambia de estado. Un contador que empieza
+    en el fondo no cuenta la primera subida: hace falta haber estado arriba antes
+    ("armado") para que una repetición sume.
     """
 
     def __init__(self, exercise: str) -> None:
@@ -54,20 +64,23 @@ class RepCounter:
         self._window: deque[float] = deque(maxlen=SMOOTHING_WINDOW)
         self._state: Phase = "ready"
         self._reps = 0
+        self._armed = False
 
     def update(self, angle: float | None) -> RepUpdate:
         if self._thresholds is None:
             return RepUpdate(phase="hold", reps=0)
-        if angle is None:
+        # Una muestra no medible (None, fuera de 0-180 o no finita) no debe mover la máquina.
+        if angle is None or not isfinite(angle) or not MIN_ANGLE <= angle <= MAX_ANGLE:
             return self._snapshot()
 
         self._window.append(angle)
-        smoothed = fmean(self._window)
+        smoothed = median(self._window)
 
         if smoothed >= self._thresholds.up:
-            if self._state == "bottom":
+            if self._state == "bottom" and self._armed:
                 self._reps += 1
             self._state = "up"
+            self._armed = True
         elif smoothed <= self._thresholds.bottom:
             self._state = "bottom"
         elif self._state == "up":
