@@ -77,6 +77,7 @@ Respuesta:
 - `message` es `feedback` unido con espacios.
 - `analyzed` es `false` si algún punto requerido tiene confianza menor de 0.55; entonces `score` es 0 y `feedback` pide volver a colocarse en el encuadre.
 - `knee_angle` está presente en `squat` y `lunge`; es `null` en el resto.
+- Si dos puntos de la articulación medida coinciden (ángulo no medible), el frame se marca como no analizado: nunca se devuelve un 0° falso.
 
 Ángulo principal y umbrales de la máquina de repeticiones:
 
@@ -88,7 +89,12 @@ Respuesta:
 | `deadlift` | bisagra de cadera | > 155° | < 115° | cadera fuera de 45°–145° |
 | `plank` | — (isométrico) | — | — | alineación; `phase` siempre `hold` y `reps` 0 |
 
-Máquina de estados por sesión: `ready` → `up` → `down` → `bottom` → `up` suma **+1 repetición**. El ángulo se suaviza con una media móvil de 5 muestras, de modo que un frame aislado no altera el conteo.
+Máquina de estados por sesión: `ready` → `up` → `down` → `bottom` → `up` suma **+1 repetición**. El ángulo se suaviza con la **mediana** de las últimas 5 muestras, de modo que un pico o un frame perdido aislado no altera el conteo.
+
+- Histéresis: entrar en `bottom` exige bajar del umbral de fondo y volver a `up` exige superar el umbral alto; la franja intermedia no cambia de estado.
+- Las muestras no medibles (ángulo ausente, no finito o fuera de 0–180) no entran en la ventana.
+- Un contador que empieza en el fondo no cuenta la primera subida: hay que haber estado arriba antes para que una repetición sume.
+- Una repetición incompleta (no llega a la posición alta) no suma. Mientras el ángulo está entre el fondo y la posición alta, `phase` sigue en `down` o `bottom`.
 
 - Sin `session_id`, solo se evalúa el frame: `reps` es 0 y `phase` describe ese frame.
 - Cambiar de `exercise` dentro de la misma sesión reinicia el contador.
@@ -106,7 +112,7 @@ Petición:
 ```
 
 - `question`: obligatoria, de 1 a 500 caracteres (se recortan espacios al inicio y al final).
-- `context` (opcional): `exercise` (texto de hasta 40 caracteres), `score` (0 a 100), `reps` (entero de 0 a 100000), `level` (texto de hasta 40 caracteres).
+- `context` (opcional): `exercise` (texto de hasta 40 caracteres; acepta los ids `squat`, `push_up`, `plank`, `deadlift`, `lunge` y nombres como `Sentadilla` o `flexiones`), `score` (0 a 100, precisión de la sesión), `reps` (entero de 0 a 100000), `level` (texto de hasta 40 caracteres: `BEGINNER`, `INTERMEDIATE`, `ADVANCED`, o `principiante`, `intermedio`, `avanzado`), y `average_angle` (opcional, 0 a 180, ángulo medio de la articulación principal en la sesión). Los campos nuevos son opcionales: las peticiones anteriores siguen siendo válidas.
 
 Respuesta:
 
@@ -114,8 +120,14 @@ Respuesta:
 { "answer": "En la plancha contrae abdomen y glúteos para que la cadera no caiga ni suba.", "source": "rules" }
 ```
 
-- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, `max_tokens` 1024 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; sólo se usan los bloques `text` y una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas; respuesta en español y concisa, sin diagnósticos médicos). `source` es `claude`.
-- Sin clave, si la llamada falla o si la respuesta llega vacía, se usan reglas (consejos por palabra clave, por ejercicio y por puntuación; máximo tres consejos). `source` es `rules`.
+- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, `max_tokens` 1024 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; solo se usan los bloques `text`). El prompt de sistema fija el rol de coach de técnica, respuestas en español de máximo tres frases, límites de seguridad (dolor → parar y consultar a un profesional; nutrición solo general) y trata la pregunta como datos: va entre `<pregunta>` y las métricas de la sesión entre `<sesion>`. Una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas. `source` es `claude`.
+- Sin clave, si la llamada falla o si la respuesta llega vacía, se usan reglas. `source` es `rules`. Las reglas responden según la intención de la pregunta, en este orden:
+  1. **Dolor, lesión, mareo u opresión en el pecho**: se recomienda parar y consultar a un profesional de la salud, sin consejos de entrenamiento.
+  2. **Fuera de tema o intento de cambiar las instrucciones**: se redirige al entrenamiento (técnica, descansos, progresión, nutrición básica) con un consejo del ejercicio actual.
+  3. **Nutrición**: orientación general (proteína, hidratación, verduras) con aviso de que no es consejo médico ni nutricional personalizado.
+  4. **Descanso**: tiempos entre series y entre sesiones según el nivel, y aviso de consultar si las agujetas persisten o el dolor es agudo.
+  5. **Técnica**: consejos por palabra clave (coincidencia al inicio de palabra), por ejercicio y por métricas (precisión por tramos, repeticiones si se preguntan, ángulo medio fuera del rango esperado), siempre con un **siguiente objetivo** según el nivel (repeticiones o segundos y precisión mínima).
+  6. **Saludo o pregunta sobre el coach**: presentación breve. Cualquier otra pregunta recibe el consejo general, nunca una respuesta vacía.
 
 ### Errores de validación
 
