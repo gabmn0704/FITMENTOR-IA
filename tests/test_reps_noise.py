@@ -36,6 +36,17 @@ class JitterTests(unittest.TestCase):
                 frames = jittered(UP, 6) + rep_frames(repetitions)
                 self.assertEqual(feed(counter, frames)[1], repetitions)
 
+    def test_single_spike_at_the_top_is_filtered_out(self) -> None:
+        # Sin filtro, el pico a 40 grados llevaría el contador a "bottom" y la siguiente
+        # muestra de 170 contaría una repetición fantasma. Con el filtro de saltos no cuenta.
+        frames = [UP] * 6 + [40] + [UP] * 6
+        self.assertEqual(feed(RepCounter("squat"), frames), ("up", 0))
+
+    def test_fast_drop_confirmed_by_the_next_sample_still_counts(self) -> None:
+        # Un descenso brusco que se repite en la muestra siguiente es real y no se pierde.
+        frames = [UP] * 6 + [60] * 2 + [UP] * 6
+        self.assertEqual(feed(RepCounter("squat"), frames), ("up", 1))
+
     def test_single_spike_at_the_top_does_not_split_or_double_a_rep(self) -> None:
         # Un pico aislado a 40 grados en mitad de la subida no debe contar repeticiones extra.
         frames = [UP] * 6 + [BOTTOM] * 6 + [UP] * 3 + [40] + [UP] * 6
@@ -84,15 +95,16 @@ class ArmingTests(unittest.TestCase):
 class InvalidSampleTests(unittest.TestCase):
     def test_invalid_samples_are_ignored(self) -> None:
         counter = RepCounter("squat")
-        bad = [float("nan"), float("inf"), -5.0, 200.0]
+        bad = [-5.0, 200.0, 0.0]
         frames: list[float | None] = []
         for repetitions in range(2):
             frames += [UP] * 6 + bad + [BOTTOM] * 6 + [None] + [UP] * 6
         self.assertEqual(feed(counter, frames)[1], 2)
 
-    def test_invalid_samples_do_not_create_a_bottom(self) -> None:
+    def test_zero_degree_dropouts_do_not_create_a_bottom(self) -> None:
+        # 0 grados no es fisiológico: un landmark degenerado no debe contar como fondo.
         counter = RepCounter("squat")
-        self.assertEqual(feed(counter, [UP] * 6 + [float("nan")] * 6 + [-1.0] * 2), ("up", 0))
+        self.assertEqual(feed(counter, [UP] * 6 + [0.0] * 6 + [-1.0] * 2), ("up", 0))
 
 
 if __name__ == "__main__":

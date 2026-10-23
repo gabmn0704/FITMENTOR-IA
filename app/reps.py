@@ -1,7 +1,6 @@
 from collections import deque
 from dataclasses import dataclass
 from math import isfinite
-from statistics import median
 from threading import Lock
 from typing import Literal
 
@@ -9,17 +8,20 @@ from app.lru import LRUCache
 
 Phase = Literal["ready", "up", "down", "bottom", "hold"]
 
-# Mediana (no media) de las últimas muestras: un pico o un frame perdido aislado no
-# mueve el ángulo suavizado, mientras que una media lo arrastraría.
-SMOOTHING_WINDOW = 5
 SESSION_CAPACITY = 500
-MIN_ANGLE = 0.0
+# Ángulos válidos de las articulaciones seguidas. Por debajo de 10 grados no es fisiológico:
+# suele ser un landmark degenerado (0 grados), así que se descarta la muestra.
+MIN_ANGLE = 10.0
 MAX_ANGLE = 180.0
+# Salto máximo entre dos muestras consecutivas (frames a ~340 ms). Un movimiento real de
+# 2 s por repetición cambia unos 43 grados por muestra; un salto mayor es un pico de ruido
+# salvo que la muestra siguiente lo confirme (ver `RepCounter.update`).
+MAX_JUMP = 60.0
 
 
 @dataclass(frozen=True)
 class Thresholds:
-    """Umbrales sobre el ángulo principal suavizado.
+    """Umbrales sobre el ángulo principal.
 
     up: a partir de este valor el atleta está en posición alta (extendida).
     bottom: por debajo de este valor se considera que llegó al fondo.
@@ -54,34 +56,53 @@ class RepCounter:
 
     Histéresis: entrar en "bottom" exige bajar del umbral `bottom` y salir hacia "up"
     exige superar `up`; la franja intermedia no cambia de estado. Un contador que empieza
-    en el fondo no cuenta la primera subida: hace falta haber estado arriba antes
-    ("armado") para que una repetición sume.
+    fuera de la posición alta no cuenta la primera subida ("armado"), salvo que el ejercicio
+    empiece en el fondo (`starts_at_bottom`).
+
+    Sin suavizado de media ni mediana: las muestras llegan cada ~340 ms y un suavizado
+    de varias muestras pierde repeticiones cortas. Los picos aislados se filtran por salto:
+    una muestra que cambia más de `MAX_JUMP` respecto a la anterior se retiene y solo se
+    acepta si la siguiente muestra la confirma.
     """
 
     def __init__(self, exercise: str) -> None:
         self.exercise = exercise
         self._thresholds = THRESHOLDS[exercise]
-        self._window: deque[float] = deque(maxlen=SMOOTHING_WINDOW)
         self._state: Phase = "ready"
         self._reps = 0
         self._armed = False
+        self._last: float | None = None
+        self._pending: float | None = None
+
+    def _accept(self, angle: float) -> bool:
+        """Filtro de saltos. Devuelve True si la muestra entra en la máquina de estados."""
+        if self._last is None or abs(angle - self._last) <= MAX_JUMP:
+            self._pending = None
+            self._last = angle
+            return True
+        if self._pending is not None and abs(angle - self._pending) <= MAX_JUMP:
+            # Dos muestras seguidas coinciden: el cambio es real, no un pico.
+            self._pending = None
+            self._last = angle
+            return True
+        self._pending = angle
+        return False
 
     def update(self, angle: float | None) -> RepUpdate:
         if self._thresholds is None:
             return RepUpdate(phase="hold", reps=0)
-        # Una muestra no medible (None, fuera de 0-180 o no finita) no debe mover la máquina.
+        # Una muestra no medible (None o fuera de rango) no debe mover la máquina.
         if angle is None or not isfinite(angle) or not MIN_ANGLE <= angle <= MAX_ANGLE:
             return self._snapshot()
+        if not self._accept(angle):
+            return self._snapshot()
 
-        self._window.append(angle)
-        smoothed = median(self._window)
-
-        if smoothed >= self._thresholds.up:
+        if angle >= self._thresholds.up:
             if self._state == "bottom" and self._armed:
                 self._reps += 1
             self._state = "up"
             self._armed = True
-        elif smoothed <= self._thresholds.bottom:
+        elif angle <= self._thresholds.bottom:
             self._state = "bottom"
         elif self._state == "up":
             self._state = "down"
