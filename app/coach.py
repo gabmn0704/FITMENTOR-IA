@@ -331,7 +331,7 @@ APP_STEMS = (
     "app",
 )
 ROUTINE_STEMS = ("rutina", "plan de entren", "programa de entren", "que entreno", "que ejercicios", "ejercicios para")
-WARMUP_STEMS = ("calent", "estir", "movilidad", "flexibilidad", "elonga")
+WARMUP_STEMS = ("calent", "calient", "estir", "movilidad", "flexibilidad", "elonga")
 WEIGHT_LOSS_STEMS = ("bajar de peso", "perder peso", "adelgaz", "grasa", "quemar", "barriga", "abdomen plano", "definir")
 MUSCLE_STEMS = ("masa muscular", "hipertrofia", "ganar musculo", "musculo", "musculos", "volumen", "marcar", "fuerza")
 HOME_STEMS = ("en casa", "sin equipo", "sin pesas", "sin material", "gimnasio", "mancuerna", "pesas", "banda elastica")
