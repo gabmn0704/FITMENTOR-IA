@@ -125,10 +125,6 @@ KEYWORD_TIPS: tuple[tuple[tuple[str, ...], str], ...] = (
         "Exhala al subir o hacer el esfuerzo e inhala al bajar, con un ritmo constante.",
     ),
     (
-        ("motiv", "cansad", "rendir", "desanim"),
-        "Cada repetición cuenta: descansa lo necesario y vuelve con una técnica limpia.",
-    ),
-    (
         ("profund", "baj"),
         "La profundidad debe ser cómoda y controlada; prioriza la técnica sobre el rango.",
     ),
@@ -138,6 +134,130 @@ PAIN_STEMS = ("dolor", "duele", "dolen", "lesion", "molestia", "pinchazo", "mare
 PAIN_ADVICE = (
     "Si sientes dolor, detente y consulta a un profesional de la salud antes de continuar. "
     "No fuerces el movimiento ni entrenes esa zona hasta que te valoren."
+)
+
+INJECTION_STEMS = (
+    "ignora",
+    "ignore",
+    "olvida tus",
+    "olvida las instrucciones",
+    "system prompt",
+    "prompt del sistema",
+    "tus instrucciones",
+    "instrucciones anteriores",
+    "instrucciones internas",
+    "tus reglas",
+    "eres ahora",
+    "actua como",
+    "finge ser",
+    "modo desarrollador",
+    "developer mode",
+    "jailbreak",
+    "api key",
+    "clave api",
+    "revela",
+    "codigo fuente",
+    "sin restricciones",
+)
+GREETING_STEMS = (
+    "hola",
+    "buenas",
+    "buenos dias",
+    "hey",
+    "que tal",
+    "quien eres",
+    "que eres",
+    "como te llamas",
+    "eres un bot",
+    "eres una ia",
+    "eres chatgpt",
+    "eres claude",
+)
+NUTRITION_STEMS = (
+    "comer",
+    "comida",
+    "dieta",
+    "proteina",
+    "nutri",
+    "calori",
+    "hidrat",
+    "agua",
+    "suplement",
+    "creatina",
+    "alimenta",
+    "carbohidrat",
+)
+REST_STEMS = (
+    "descans",
+    "recuper",
+    "dormi",
+    "sueno",
+    "agujet",
+    "dias",
+    "frecuencia",
+    "cada cuanto",
+    "cuanto tiempo",
+    "entre series",
+    "semana",
+)
+PROGRESSION_STEMS = (
+    "progres",
+    "siguiente nivel",
+    "subir de nivel",
+    "subir nivel",
+    "subo de nivel",
+    "subo nivel",
+    "avanzar",
+    "mejorar",
+    "aumentar",
+    "reto",
+    "dificultad",
+    "siguiente paso",
+    "evoluc",
+)
+MOTIVATION_STEMS = (
+    "motiv",
+    "cansad",
+    "rendir",
+    "desanim",
+    "no puedo",
+    "no me sale",
+    "dificil",
+    "frustr",
+    "aburr",
+    "pereza",
+)
+
+OFF_TOPIC_REPLY = (
+    "Solo puedo ayudarte con tu entrenamiento en FitMentor: técnica, repeticiones, descansos, "
+    "progresión o nutrición básica."
+)
+GREETING_REPLY = (
+    "¡Hola! Soy el coach de técnica de FitMentor, un asistente automático. Pregúntame por tu forma, "
+    "tus descansos o tu siguiente objetivo."
+)
+NUTRITION_ADVICE = (
+    "Orientación general, no es consejo médico ni nutricional personalizado: reparte la proteína en "
+    "las comidas del día (se suele recomendar entre 1,6 y 2,2 g por kg de peso a quien entrena), "
+    "incluye verduras y carbohidratos de calidad, y bebe agua antes, durante y después del entreno. "
+    "Para suplementos o una dieta concreta, consulta a un profesional."
+)
+REST_ADVICE: dict[str, str] = {
+    "BEGINNER": "Descansa de 60 a 90 segundos entre series y deja 48 horas entre sesiones del mismo grupo muscular.",
+    "INTERMEDIATE": "Descansa de 60 a 120 segundos entre series y de 48 a 72 horas entre sesiones del mismo grupo muscular.",
+    "ADVANCED": "Descansa de 90 a 180 segundos entre series si buscas fuerza, y de 48 a 72 horas entre sesiones del mismo grupo.",
+}
+REST_ADVICE_DEFAULT = "Descansa de 60 a 90 segundos entre series y deja 48 horas entre sesiones del mismo grupo muscular."
+REST_SAFETY = "Si las agujetas duran más de tres días o el dolor es agudo, reduce el volumen y consulta a un profesional."
+PROGRESSION_ADVICE: dict[str, str] = {
+    "BEGINNER": "Sube de nivel cuando cumplas el objetivo con 80% o más de precisión en dos sesiones seguidas.",
+    "INTERMEDIATE": "Sube de nivel cuando mantengas 85% o más en dos sesiones seguidas: primero añade repeticiones y después tempo.",
+    "ADVANCED": "Progresa con carga o tempo solo cuando mantengas 90% o más en dos sesiones seguidas.",
+}
+PROGRESSION_ADVICE_DEFAULT = "Sube la dificultad solo cuando mantengas una precisión alta en dos sesiones seguidas."
+MOTIVATION_ADVICE = (
+    "Es normal sentirse así: diez repeticiones bien hechas valen más que veinte malas. Descansa, "
+    "respira y termina con una serie corta de buena forma."
 )
 
 DEFAULT_TIP = (
@@ -245,21 +365,41 @@ def _next_goal(exercise: str, level: str | None) -> str:
     )
 
 
+def _join(*parts: str | None) -> str:
+    return " ".join(part for part in parts if part)
+
+
 def rule_based_answer(question: str, context: CoachContext | None = None) -> str:
-    """Respuesta por reglas, con consejos por palabra clave, por ejercicio, nivel y métricas."""
+    """Respuesta por reglas: intención de la pregunta, ejercicio, nivel y métricas de la sesión.
+
+    Orden: seguridad (dolor) > fuera de tema o inyección > nutrición > descanso > técnica.
+    Nunca devuelve una cadena vacía.
+    """
     context = context or CoachContext()
     text = _key(question)
-    # La seguridad va primero: con dolor no se da ningún otro consejo de entrenamiento.
-    if _mentions(text, PAIN_STEMS):
-        return PAIN_ADVICE
     exercise = _canonical_exercise(context.exercise) or _exercise_in_text(text)
     level = _canonical_level(context.level)
 
+    # La seguridad va primero: con dolor no se da ningún otro consejo de entrenamiento.
+    if _mentions(text, PAIN_STEMS):
+        return PAIN_ADVICE
+    if _mentions(text, INJECTION_STEMS):
+        return _join(OFF_TOPIC_REPLY, EXERCISE_TIPS.get(exercise or "", DEFAULT_TIP))
+    if _mentions(text, NUTRITION_STEMS):
+        return NUTRITION_ADVICE
+    if _mentions(text, REST_STEMS):
+        return _join(REST_ADVICE.get(level or "", REST_ADVICE_DEFAULT), REST_SAFETY)
+
     keyword_tips = [tip for stems, tip in KEYWORD_TIPS if _mentions(text, stems)][:2]
+    if not keyword_tips and exercise is None and _mentions(text, GREETING_STEMS):
+        return GREETING_REPLY
+
     body = keyword_tips + ([EXERCISE_TIPS[exercise]] if exercise else [])
     body = body[:3] or [DEFAULT_TIP]
 
     extras: list[str] = []
+    if _mentions(text, MOTIVATION_STEMS):
+        extras.append(MOTIVATION_ADVICE)
     performance = _performance_note(context)
     if performance:
         extras.append(performance)
@@ -268,10 +408,13 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
         extras.append(angle_note)
     if context.reps is not None and exercise != "plank" and re.search(r"repet|cuant", text):
         extras.append(f"Llevas {context.reps} repeticiones; mantén la misma calidad en cada una.")
-    if exercise:
-        extras.append(_next_goal(exercise, level))
+    goal = _next_goal(exercise, level) if exercise else None
+    if _mentions(text, PROGRESSION_STEMS):
+        extras.append(PROGRESSION_ADVICE.get(level or "", PROGRESSION_ADVICE_DEFAULT))
+    if goal:
+        extras.append(goal)
 
-    return " ".join(body + extras)
+    return _join(*body, *extras)
 
 
 def ask_claude(
