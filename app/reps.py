@@ -25,10 +25,13 @@ class Thresholds:
 
     up: a partir de este valor el atleta está en posición alta (extendida).
     bottom: por debajo de este valor se considera que llegó al fondo.
+    starts_at_bottom: el movimiento empieza en el fondo (p. ej. peso muerto desde el suelo),
+        así que la primera subida ya cuenta como repetición.
     """
 
     up: float
     bottom: float
+    starts_at_bottom: bool = False
 
 
 # Ángulo principal: rodilla (squat, lunge), codo (push_up) o bisagra de cadera (deadlift).
@@ -37,7 +40,7 @@ THRESHOLDS: dict[str, Thresholds | None] = {
     "squat": Thresholds(up=150, bottom=105),
     "lunge": Thresholds(up=150, bottom=105),
     "push_up": Thresholds(up=150, bottom=90),
-    "deadlift": Thresholds(up=155, bottom=115),
+    "deadlift": Thresholds(up=155, bottom=115, starts_at_bottom=True),
     "plank": None,
 }
 
@@ -70,7 +73,7 @@ class RepCounter:
         self._thresholds = THRESHOLDS[exercise]
         self._state: Phase = "ready"
         self._reps = 0
-        self._armed = False
+        self._armed = bool(self._thresholds and self._thresholds.starts_at_bottom)
         self._last: float | None = None
         self._pending: float | None = None
 

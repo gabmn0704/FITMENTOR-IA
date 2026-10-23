@@ -60,5 +60,37 @@ class SampledRepetitionTests(unittest.TestCase):
         self.assertEqual(len(set(reps_seen)), 4)
 
 
+class DeadliftStartsAtBottomTests(unittest.TestCase):
+    def test_first_lift_from_the_floor_counts(self) -> None:
+        # El peso muerto empieza con la cadera abajo: la primera subida es una repetición.
+        frames = [110.0] * 6 + [165.0] * 6
+        self.assertEqual(count_reps("deadlift", frames), 1)
+
+    def test_sampled_deadlifts_from_the_floor_count_exactly(self) -> None:
+        for repetitions in (1, 3):
+            with self.subTest(repetitions=repetitions):
+                frames = [110.0] * 3
+                for _ in range(repetitions):
+                    frames += repetition_frames_from_floor(period_s=2.5, repetitions=1)
+                self.assertEqual(count_reps("deadlift", frames), repetitions)
+
+    def test_other_exercises_still_need_to_reach_the_top_first(self) -> None:
+        frames = [100.0] * 6 + [170.0] * 6
+        self.assertEqual(count_reps("squat", frames), 0)
+
+
+def repetition_frames_from_floor(period_s: float, repetitions: int) -> list[float]:
+    """Peso muerto: sale del fondo (110 grados), sube a 165 y vuelve al fondo."""
+    frames: list[float] = []
+    mid, amplitude = (165.0 + 110.0) / 2, (165.0 - 110.0) / 2
+    t = 0.0
+    end = repetitions * period_s
+    while t <= end:
+        frames.append(mid - amplitude * math.cos(2 * math.pi * t / period_s))
+        t += FRAME_INTERVAL_S
+    frames += [110.0] * 2
+    return frames
+
+
 if __name__ == "__main__":
     unittest.main()
