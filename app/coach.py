@@ -138,7 +138,31 @@ KEYWORD_TIPS: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
 )
 
-PAIN_STEMS = ("dolor", "duele", "dolen", "lesion", "molestia", "pinchazo", "mareo", "mareado")
+# Raíces de dolor, lesión y malestar, en español e inglés. Son deliberadamente amplias:
+# ante la duda se recomienda parar. "pecho" solo cuenta dentro de frases de presión o dolor.
+PAIN_STEMS = (
+    "dol",  # dolor, dolió, duele, dolido
+    "duel",  # duele, duelen
+    "adolor",  # adolorido
+    "me molesta",
+    "molestia",
+    "molesto",  # "molestar" (fastidiar) no cuenta: es una pregunta normal
+    "mare",  # mareo, mareada, mareado
+    "lastim",  # me lastimé, lastimado
+    "lesion",
+    "esguince",
+    "pinchazo",
+    "opresion",  # opresión en el pecho
+    "presion en el pecho",
+    "presion en pecho",
+    "sangr",
+    "pain",
+    "hurt",
+    "ache",
+    "dizzy",
+    "injur",
+    "sprain",
+)
 PAIN_ADVICE = (
     "Si sientes dolor, detente y consulta a un profesional de la salud antes de continuar. "
     "No fuerces el movimiento ni entrenes esa zona hasta que te valoren."
@@ -381,6 +405,11 @@ def _join(*parts: str | None) -> str:
     return " ".join(part for part in parts if part)
 
 
+def is_pain(question: str) -> bool:
+    """True si la pregunta menciona dolor, lesión o malestar que obliga a parar."""
+    return _mentions(_key(question), PAIN_STEMS)
+
+
 def rule_based_answer(question: str, context: CoachContext | None = None) -> str:
     """Respuesta por reglas: intención de la pregunta, ejercicio, nivel y métricas de la sesión.
 
@@ -393,7 +422,7 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
     level = _canonical_level(context.level)
 
     # La seguridad va primero: con dolor no se da ningún otro consejo de entrenamiento.
-    if _mentions(text, PAIN_STEMS):
+    if is_pain(question):
         return PAIN_ADVICE
     if _mentions(text, INJECTION_STEMS):
         return _join(OFF_TOPIC_REPLY, EXERCISE_TIPS.get(exercise or "", DEFAULT_TIP))
@@ -474,6 +503,9 @@ def answer_coach(
 ) -> CoachAnswer:
     """Responde con Claude si hay clave y la llamada funciona; si no, con reglas."""
     context = context or CoachContext()
+    # El dolor se responde siempre de forma determinista, antes de llamar a ningún modelo.
+    if is_pain(question):
+        return CoachAnswer(answer=PAIN_ADVICE, source="rules")
     if api_key:
         try:
             text = ask_claude(question, context, api_key, transport)
