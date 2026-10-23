@@ -1,27 +1,59 @@
+import os
 from math import acos, degrees, hypot
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, StringConstraints
+
+from app.coach import CoachAnswer, CoachContext, answer_coach
+from app.reps import Phase, RepSessionStore
 
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+sessions = RepSessionStore()
 
-Exercise = Literal["squat", "push_up", "plank", "deadlift"]
+Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
 MINIMUM_CONFIDENCE = 0.55
+# Ángulo principal (clave de `angles`) que alimenta el contador de repeticiones.
+PRIMARY_ANGLE_KEYS: dict[str, str] = {
+    "squat": "knee",
+    "lunge": "knee",
+    "push_up": "elbow",
+    "deadlift": "hip_hinge",
+}
+
+
+# Límites de entrada: MediaPipe produce 33 landmarks; el backend descarta frames con más de 64.
+MAX_POINTS = 64
+MAX_NAME_LENGTH = 40
+MAX_FRAME_WIDTH = 7680
+MAX_FRAME_HEIGHT = 4320
 
 
 class Point(BaseModel):
-    name: str = Field(min_length=1)
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
+    name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
+    # Coordenadas normalizadas. MediaPipe puede devolver landmarks algo fuera del encuadre
+    # (p. ej. tobillos cortados), así que se admite un margen en lugar de rechazar el frame.
+    x: float = Field(ge=-0.5, le=1.5)
+    y: float = Field(ge=-0.5, le=1.5)
     confidence: float = Field(ge=0, le=1)
 
 
 class PoseRequest(BaseModel):
     exercise: Exercise
-    points: list[Point]
-    frame_width: int = Field(default=16, gt=0)
-    frame_height: int = Field(default=9, gt=0)
+    points: list[Point] = Field(max_length=MAX_POINTS)
+    frame_width: int = Field(default=16, gt=0, le=MAX_FRAME_WIDTH)
+    frame_height: int = Field(default=9, gt=0, le=MAX_FRAME_HEIGHT)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class CoachRequest(BaseModel):
+    question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+    ]
+    context: CoachContext | None = None
 
 
 class PoseResponse(BaseModel):
@@ -31,6 +63,9 @@ class PoseResponse(BaseModel):
     angles: dict[str, float] = Field(default_factory=dict)
     confidence: float
     analyzed: bool
+    phase: Phase = "ready"
+    reps: int = 0
+    message: str = ""
 
 
 def angle(first: Point, vertex: Point, last: Point, frame_width: int, frame_height: int) -> float:
@@ -77,8 +112,8 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/analyze", response_model=PoseResponse)
-def analyze(request: PoseRequest) -> PoseResponse:
+def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
+    """Analiza un frame. Devuelve la respuesta y el ángulo principal para el contador de reps."""
     by_name: dict[str, Point] = {}
     for point in request.points:
         name = point.name.strip().lower()
@@ -91,6 +126,7 @@ def analyze(request: PoseRequest) -> PoseResponse:
         "push_up": ("shoulder", "elbow", "wrist"),
         "plank": ("shoulder", "hip", "ankle"),
         "deadlift": ("shoulder", "hip", "knee"),
+        "lunge": ("hip", "knee", "ankle"),
     }[request.exercise]
     selected = select_joints(by_name, required_joints)
     overall_confidence = round(
@@ -112,11 +148,16 @@ def analyze(request: PoseRequest) -> PoseResponse:
             "ankle": "tobillos",
         }
         visible_names = ", ".join(joint_labels[name] for name in required_joints)
-        return PoseResponse(
-            score=0,
-            feedback=[f"Colócate dentro del encuadre y mantén visibles: {visible_names}."],
-            confidence=overall_confidence,
-            analyzed=False,
+        feedback = [f"Colócate dentro del encuadre y mantén visibles: {visible_names}."]
+        return (
+            PoseResponse(
+                score=0,
+                feedback=feedback,
+                confidence=overall_confidence,
+                analyzed=False,
+                message=" ".join(feedback),
+            ),
+            None,
         )
 
     width, height = request.frame_width, request.frame_height
@@ -134,6 +175,16 @@ def analyze(request: PoseRequest) -> PoseResponse:
         elif knee_angle < 65:
             corrections.append("Reduce la profundidad y mantén el movimiento controlado.")
             deduction += min(40, (65 - knee_angle) * 0.7)
+
+    elif request.exercise == "lunge":
+        knee_angle = angle(*selected, width, height)
+        angles["knee"] = knee_angle
+        if knee_angle > 100:
+            corrections.append("Baja un poco más controlando la rodilla delantera.")
+            deduction += min(45, (knee_angle - 100) * 0.6)
+        elif knee_angle < 80:
+            corrections.append("Reduce la profundidad y mantén la rodilla alineada con el pie.")
+            deduction += min(40, (80 - knee_angle) * 0.7)
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)
@@ -175,11 +226,33 @@ def analyze(request: PoseRequest) -> PoseResponse:
         corrections.append("Buena posición. Muévete con control y mantén una respiración constante.")
 
     score = round(max(0.0, min(100.0, overall_confidence * 100 - deduction)), 2)
-    return PoseResponse(
+    primary_key = PRIMARY_ANGLE_KEYS.get(request.exercise)
+    primary_angle = angles.get(primary_key) if primary_key else None
+    response = PoseResponse(
         score=score,
         feedback=corrections,
         knee_angle=knee_angle,
         angles=angles,
         confidence=overall_confidence,
         analyzed=True,
+        message=" ".join(corrections),
     )
+    return response, primary_angle
+
+
+def analyze(request: PoseRequest) -> PoseResponse:
+    """Análisis de un frame sin estado de sesión (phase "ready" y reps 0 por defecto)."""
+    return evaluate(request)[0]
+
+
+@app.post("/analyze", response_model=PoseResponse)
+def analyze_endpoint(request: PoseRequest) -> PoseResponse:
+    response, primary_angle = evaluate(request)
+    update = sessions.update(request.session_id, request.exercise, primary_angle)
+    return response.model_copy(update={"phase": update.phase, "reps": update.reps})
+
+
+@app.post("/coach", response_model=CoachAnswer)
+def coach(request: CoachRequest) -> CoachAnswer:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
+    return answer_coach(request.question, request.context, api_key)
