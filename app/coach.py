@@ -300,9 +300,88 @@ MOTIVATION_ADVICE = (
 )
 
 DEFAULT_TIP = (
-    "Enfócate en una técnica controlada y en la respiración. Pregunta por un punto concreto "
-    "(rodillas, espalda, profundidad) para un consejo más preciso."
+    "No tengo un consejo específico para eso, pero en cualquier ejercicio funciona lo mismo: técnica "
+    "controlada, respiración constante y descanso suficiente. Puedes preguntarme por una rutina, el "
+    "calentamiento, tus descansos, la progresión, la nutrición básica o la técnica de sentadilla, "
+    "flexión, plancha, peso muerto y zancada."
 )
+
+THANKS_STEMS = ("gracias", "thank", "genial", "perfecto", "excelente", "buenisimo")
+GOODBYE_STEMS = ("adios", "chao", "chau", "hasta luego", "nos vemos", "bye", "me voy")
+HELP_STEMS = (
+    "ayuda",
+    "ayudame",
+    "que puedes",
+    "que sabes",
+    "que haces",
+    "para que sirves",
+    "como estas",
+    "como te va",
+    "en que me",
+)
+APP_STEMS = (
+    "fitmentor",
+    "camara",
+    "como funciona",
+    "como uso",
+    "como se usa",
+    "puntuacion",
+    "precision",
+    "como me mide",
+    "app",
+)
+ROUTINE_STEMS = ("rutina", "plan de entren", "programa de entren", "que entreno", "que ejercicios", "ejercicios para")
+WARMUP_STEMS = ("calent", "estir", "movilidad", "flexibilidad", "elonga")
+WEIGHT_LOSS_STEMS = ("bajar de peso", "perder peso", "adelgaz", "grasa", "quemar", "barriga", "abdomen plano", "definir")
+MUSCLE_STEMS = ("masa muscular", "hipertrofia", "ganar musculo", "musculo", "musculos", "volumen", "marcar", "fuerza")
+HOME_STEMS = ("en casa", "sin equipo", "sin pesas", "sin material", "gimnasio", "mancuerna", "pesas", "banda elastica")
+BEGINNER_STEMS = ("empezar", "empiezo", "comenzar", "primera vez", "soy nuevo", "soy nueva", "principiante")
+SHORT_TIME_STEMS = ("15 min", "10 min", "20 min", "30 min", "poco tiempo", "rapido", "corta", "corto")
+
+THANKS_REPLY = "¡De nada! Aquí estoy para lo que necesites: técnica, rutinas, descansos o progresión."
+GOODBYE_REPLY = "¡Hasta pronto! Descansa bien, hidrátate y vuelve cuando quieras entrenar."
+HELP_REPLY = (
+    "Estoy bien, ¡gracias por preguntar! Puedo ayudarte con tu técnica en sentadilla, flexión, plancha, "
+    "peso muerto y zancada, armarte una rutina, explicarte descansos, calentamiento, progresión de nivel "
+    "y nutrición básica. Cuéntame qué quieres lograr."
+)
+APP_REPLY = (
+    "FitMentor usa la cámara de tu dispositivo para ver tu postura mientras entrenas: cuenta tus "
+    "repeticiones, calcula una precisión (qué tan cerca estuvo tu forma de la ideal) y te da correcciones "
+    "al terminar. Colócate de lado o de frente con el cuerpo completo visible y buena luz."
+)
+WARMUP_ADVICE = (
+    "Calienta de 5 a 8 minutos: movilidad de cadera, hombros y tobillos, un poco de cardio suave y una "
+    "serie ligera del ejercicio. Deja los estiramientos largos para el final, cuando el cuerpo ya está caliente."
+)
+WEIGHT_LOSS_ADVICE = (
+    "Orientación general, no es consejo médico: bajar grasa depende sobre todo de un pequeño déficit de "
+    "calorías sostenido, proteína suficiente, dormir bien y entrenar fuerza 3 o 4 veces por semana. "
+    "Los ejercicios te ayudan a mantener músculo; no se puede quemar grasa solo de una zona."
+)
+MUSCLE_ADVICE = (
+    "Para ganar músculo: entrena cada grupo 2 veces por semana, de 6 a 12 repeticiones cerca del fallo "
+    "técnico, sube la dificultad poco a poco, come proteína suficiente y duerme de 7 a 9 horas. "
+    "La técnica limpia importa más que la carga."
+)
+HOME_ADVICE = (
+    "Puedes entrenar bien sin equipo: sentadillas, flexiones, zancadas y plancha cubren piernas, "
+    "pecho, core y hombros. Si te quedas corto, sube las repeticiones, baja más lento o haz una pausa abajo."
+)
+BEGINNER_ADVICE = (
+    "Para empezar: entrena 3 días por semana con 48 horas entre sesiones, elige 3 o 4 ejercicios, haz "
+    "2 series de 8 a 10 repeticiones con buena técnica y no busques la carga todavía. La constancia gana."
+)
+ROUTINE_SHORT = (
+    "Rutina corta de 15 minutos: 2 minutos de calentamiento; luego 3 rondas de 10 sentadillas, 8 flexiones, "
+    "8 zancadas por pierna y 30 segundos de plancha, con 30 segundos de pausa entre rondas."
+)
+ROUTINE_BY_LEVEL: dict[str, str] = {
+    "BEGINNER": "Rutina para principiante (3 días por semana): 2 series de 10 sentadillas, 6 flexiones apoyando rodillas, 8 zancadas y plancha de 20 a 30 segundos. Descansa 60 a 90 segundos entre series.",
+    "INTERMEDIATE": "Rutina intermedia (3 o 4 días por semana): 3 series de 12 sentadillas, 10 flexiones, 10 zancadas por pierna, 8 peso muerto y plancha de 45 a 60 segundos. Descansa 60 a 90 segundos.",
+    "ADVANCED": "Rutina avanzada (4 días por semana): 4 series de 12 a 15 sentadillas con tempo de 3 segundos, 15 flexiones, 12 zancadas por pierna, 10 peso muerto con carga y plancha de 90 segundos. Descansa 90 a 120 segundos.",
+}
+ROUTINE_DEFAULT = ROUTINE_BY_LEVEL["BEGINNER"]
 
 
 class CoachContext(BaseModel):
@@ -453,6 +532,31 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
         return NUTRITION_ADVICE
     if _mentions(text, REST_STEMS):
         return _join(REST_ADVICE.get(level or "", REST_ADVICE_DEFAULT), REST_SAFETY)
+
+    # Intenciones generales: la pregunta no trata de un ejercicio concreto.
+    if question_exercise is None:
+        if _mentions(text, WEIGHT_LOSS_STEMS):
+            return WEIGHT_LOSS_ADVICE
+        if _mentions(text, MUSCLE_STEMS):
+            return MUSCLE_ADVICE
+    if _mentions(text, ROUTINE_STEMS):
+        if _mentions(text, SHORT_TIME_STEMS):
+            return ROUTINE_SHORT
+        return ROUTINE_BY_LEVEL.get(level or "", ROUTINE_DEFAULT)
+    if _mentions(text, WARMUP_STEMS):
+        return WARMUP_ADVICE
+    if _mentions(text, HOME_STEMS):
+        return HOME_ADVICE
+    if _mentions(text, BEGINNER_STEMS):
+        return BEGINNER_ADVICE
+    if question_exercise is None and _mentions(text, APP_STEMS):
+        return APP_REPLY
+    if question_exercise is None and _mentions(text, HELP_STEMS):
+        return HELP_REPLY
+    if question_exercise is None and _mentions(text, THANKS_STEMS):
+        return THANKS_REPLY
+    if question_exercise is None and _mentions(text, GOODBYE_STEMS):
+        return GOODBYE_REPLY
 
     keyword_tips = [tip for stems, tip in KEYWORD_TIPS if _mentions(text, stems)][:2]
     if not keyword_tips and question_exercise is None and _mentions(text, GREETING_STEMS):
