@@ -22,6 +22,7 @@ python -m unittest discover -s tests -v
 | Variable | Obligatoria | Descripción |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | No | Si existe, `/coach` consulta a Claude. Si falta o la llamada falla, responde con reglas. Nunca se registra en logs. |
+| `AI_SHARED_SECRET` | Sí en producción | Secreto compartido con el backend Java. Si está definida, `/analyze` y `/coach` exigen la cabecera `X-Internal-Token` con ese valor (si falta o no coincide, `401 {"detail":"unauthorized"}`). `/health` y `/docs` no la exigen. Si no está definida, no hay autenticación y el arranque registra una advertencia. Nunca se registra en logs. |
 | `PORT` | No | Puerto de escucha en el contenedor (por defecto `8000`). |
 
 ## Endpoints
@@ -133,10 +134,14 @@ Respuesta:
 
 Los cuerpos inválidos devuelven `422 Unprocessable Entity` con el detalle de FastAPI (por ejemplo, un ejercicio desconocido, coordenadas fuera de rango o una pregunta de más de 500 caracteres).
 
+## Autenticación
+
+Con `AI_SHARED_SECRET` definida, cada petición a `/analyze` y `/coach` debe enviar la cabecera `X-Internal-Token` con el mismo valor. La comparación es de tiempo constante (`hmac.compare_digest`). Sin cabecera o con un valor incorrecto la respuesta es `401` con `{"detail":"unauthorized"}`. El backend Java la envía en cada llamada.
+
 ## CORS
 
-El servicio acepta peticiones de cualquier origen (`Access-Control-Allow-Origin: *`).
+No hay CORS habilitado: el servicio solo lo llama el backend (servidor a servidor) y el navegador no debe llamarlo directamente. Un origen de navegador no recibe `Access-Control-Allow-Origin`.
 
 ## Despliegue
 
-`render.yaml` define un servicio Docker con `healthCheckPath: /health`. Configura `ANTHROPIC_API_KEY` en el panel de Render; no se guarda en el repositorio.
+`render.yaml` define un servicio Docker con `healthCheckPath: /health`. Configura `ANTHROPIC_API_KEY` y `AI_SHARED_SECRET` en el panel de Render (ambas con `sync: false`); no se guardan en el repositorio. `AI_SHARED_SECRET` debe ser idéntica a la del backend.

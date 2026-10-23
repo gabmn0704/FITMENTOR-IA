@@ -1,16 +1,26 @@
 import os
+from contextlib import asynccontextmanager
 from math import acos, degrees, hypot, isfinite
 from typing import Annotated, Literal
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends, FastAPI
 from pydantic import BaseModel, Field, StringConstraints
 
 from app.coach import CoachAnswer, CoachContext, answer_coach
 from app.reps import Phase, RepSessionStore
+from app.security import require_shared_secret, warn_if_unprotected
 
-app = FastAPI(title="FitMentor Pose Service", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    warn_if_unprotected()
+    yield
+
+
+app = FastAPI(title="FitMentor Pose Service", version="1.0.0", lifespan=lifespan)
+# Solo el backend Java llama a este servicio (servidor a servidor): no se habilita CORS.
+# Las rutas de análisis y coach van en este router, que exige X-Internal-Token si hay secreto.
+protected = APIRouter(dependencies=[Depends(require_shared_secret)])
 sessions = RepSessionStore()
 
 Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
@@ -287,14 +297,17 @@ def analyze(request: PoseRequest) -> PoseResponse:
     return evaluate(request)[0]
 
 
-@app.post("/analyze", response_model=PoseResponse)
+@protected.post("/analyze", response_model=PoseResponse)
 def analyze_endpoint(request: PoseRequest) -> PoseResponse:
     response, primary_angle = evaluate(request)
     update = sessions.update(request.session_id, request.exercise, primary_angle)
     return response.model_copy(update={"phase": update.phase, "reps": update.reps})
 
 
-@app.post("/coach", response_model=CoachAnswer)
+@protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
     return answer_coach(request.question, request.context, api_key)
+
+
+app.include_router(protected)

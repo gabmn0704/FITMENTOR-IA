@@ -92,7 +92,8 @@ class CoachValidationTests(unittest.TestCase):
 
 
 class CorsTests(unittest.TestCase):
-    def test_preflight_allows_any_origin(self) -> None:
+    def test_preflight_from_a_browser_origin_is_not_allowed(self) -> None:
+        # Solo el backend Java llama al servicio: ningún origen de navegador recibe CORS.
         response = client.options(
             "/coach",
             headers={
@@ -101,7 +102,7 @@ class CorsTests(unittest.TestCase):
                 "Access-Control-Request-Headers": "content-type",
             },
         )
-        self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
+        self.assertNotIn("access-control-allow-origin", response.headers)
 
 
 if __name__ == "__main__":
