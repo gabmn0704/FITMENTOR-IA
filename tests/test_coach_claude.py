@@ -27,11 +27,11 @@ def recording_transport(text: str = "Mantén el pecho erguido.") -> tuple[httpx.
 
 class SystemPromptTests(unittest.TestCase):
     def test_prompt_sets_the_coach_role_and_language(self) -> None:
-        self.assertIn("coach de técnica", SYSTEM_PROMPT)
+        self.assertIn("coach de FitMentor", SYSTEM_PROMPT)
         self.assertIn("español", SYSTEM_PROMPT)
 
     def test_prompt_limits_length(self) -> None:
-        self.assertIn("máximo tres frases", SYSTEM_PROMPT)
+        self.assertIn("de dos a cinco frases", SYSTEM_PROMPT)
 
     def test_prompt_keeps_the_safety_limits(self) -> None:
         self.assertIn("no hagas diagnósticos", SYSTEM_PROMPT)
