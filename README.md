@@ -21,6 +21,7 @@ python -m unittest discover -s tests -v
 
 | Variable | Obligatoria | Descripción |
 | --- | --- | --- |
+| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | No | Proveedor gratuito compatible con la API de OpenAI (por defecto Groq; la clave se crea en console.groq.com). Se usa si no hay `ANTHROPIC_API_KEY` o si Claude falla; si todo falla, responde con reglas. |
 | `ANTHROPIC_API_KEY` | No | Si existe, `/coach` consulta a Claude. Si falta o la llamada falla, responde con reglas. Nunca se registra en logs. |
 | `AI_SHARED_SECRET` | Sí en producción | Secreto compartido con el backend Java. Si está definida, `/analyze` y `/coach` exigen la cabecera `X-Internal-Token` con ese valor (si falta o no coincide, `401 {"detail":"unauthorized"}`). `/health` y `/docs` no la exigen. Si no está definida, no hay autenticación y el arranque registra una advertencia. Nunca se registra en logs. |
 | `PORT` | No | Puerto de escucha en el contenedor (por defecto `8000`). |

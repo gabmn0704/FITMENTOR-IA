@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, FastAPI
 from pydantic import BaseModel, Field, StringConstraints
 
-from app.coach import CoachAnswer, CoachContext, answer_coach
+from app.coach import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, CoachAnswer, CoachContext, LlmConfig, answer_coach
 from app.reps import Phase, RepSessionStore
 from app.security import require_shared_secret, warn_if_unprotected
 
@@ -307,7 +307,17 @@ def analyze_endpoint(request: PoseRequest) -> PoseResponse:
 @protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
-    return answer_coach(request.question, request.context, api_key)
+    llm_key = os.environ.get("LLM_API_KEY", "").strip()
+    llm = (
+        LlmConfig(
+            api_key=llm_key,
+            base_url=os.environ.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL,
+            model=os.environ.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
+        )
+        if llm_key
+        else None
+    )
+    return answer_coach(request.question, request.context, api_key, llm=llm)
 
 
 app.include_router(protected)
