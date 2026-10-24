@@ -137,7 +137,13 @@ def line_deviation(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # Solo indica si hay un modelo de lenguaje configurado; nunca expone claves ni nombres de proveedor.
+    configured = [
+        name
+        for name, variable in (("claude", "ANTHROPIC_API_KEY"), ("llm", "LLM_API_KEY"))
+        if os.environ.get(variable, "").strip()
+    ]
+    return {"status": "ok", "coach": "+".join(configured) if configured else "reglas"}
 
 
 JOINT_LABELS = {

@@ -1,9 +1,12 @@
+import logging
 import re
 import unicodedata
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("fitmentor.coach")
 
 CLAUDE_MODEL = "claude-haiku-5-5"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -278,10 +281,13 @@ OFF_TOPIC_REPLY = (
     "Solo puedo ayudarte con tu entrenamiento en FitMentor: técnica, repeticiones, descansos, "
     "progresión o nutrición básica."
 )
-GREETING_REPLY = (
-    "¡Hola! Soy el coach de técnica de FitMentor, un asistente automático. Pregúntame por tu forma, "
-    "tus descansos o tu siguiente objetivo."
+GREETING_REPLIES = (
+    "¡Hola! Qué bueno verte por aquí. ¿Qué quieres trabajar hoy: tu técnica, tu rutina o lo que vas a comer?",
+    "¡Buenas! Cuéntame cómo vas: ¿entrenaste hoy o estás por empezar? Con eso te digo por dónde seguir.",
+    "¡Hey, hola! Estoy listo para ayudarte. ¿Tienes alguna duda de un ejercicio, de tu plan o de la comida?",
+    "¡Hola! Aquí estoy. Dime qué necesitas y lo vemos: postura, repeticiones, descanso o alimentación.",
 )
+GREETING_REPLY = GREETING_REPLIES[0]
 NUTRITION_ADVICE = (
     "Orientación general, no es consejo médico ni nutricional personalizado: reparte la proteína en "
     "las comidas del día (se suele recomendar entre 1,6 y 2,2 g por kg de peso a quien entrena), "
@@ -591,6 +597,19 @@ def is_pain(question: str) -> bool:
     return _mentions(_key(question), PAIN_STEMS)
 
 
+def _variant(options: tuple[str, ...], text: str) -> str:
+    """Elige una variante de forma estable según el texto: la misma pregunta da la misma respuesta."""
+    return options[sum(ord(char) for char in text) % len(options)]
+
+
+def _plan_line(profile: CoachProfile | None) -> str | None:
+    """Una frase sobre el avance del plan, si la persona tiene uno."""
+    if profile is None or profile.goal is None:
+        return None
+    where = f"Vas en la semana {profile.week} de {profile.weeks} de tu plan" if profile.week and profile.weeks else "Tienes un plan activo"
+    return f"{where} para {GOAL_NAMES[profile.goal]}."
+
+
 def _nutrition_numbers(profile: CoachProfile | None) -> str | None:
     """Con perfil, abre la respuesta con las metas de la persona; sin perfil no añade nada."""
     if profile is None or profile.kcal is None:
@@ -650,7 +669,11 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
 
     keyword_tips = [tip for stems, tip in KEYWORD_TIPS if _mentions(text, stems)][:2]
     if not keyword_tips and question_exercise is None and _mentions(text, GREETING_STEMS):
-        return _join(GREETING_REPLY, EXERCISE_TIPS[exercise]) if exercise else GREETING_REPLY
+        greeting = _variant(GREETING_REPLIES, text)
+        plan = _plan_line(context.profile)
+        if exercise:
+            return _join(greeting, EXERCISE_TIPS[exercise])
+        return _join(plan, greeting) if plan else greeting
 
     body = keyword_tips + ([EXERCISE_TIPS[exercise]] if exercise else [])
     body = body[:3] or [DEFAULT_TIP]
@@ -764,6 +787,13 @@ def clip_answer(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
     return head.rstrip()
 
 
+def describe_failure(error: Exception) -> str:
+    """Resumen del fallo de un proveedor para los registros: código HTTP o tipo de error, sin datos sensibles."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTP {error.response.status_code}"
+    return type(error).__name__
+
+
 def answer_coach(
     question: str,
     context: CoachContext | None = None,
@@ -784,14 +814,14 @@ def answer_coach(
             text = ask_claude(question, context, api_key, transport)
             if text:
                 return CoachAnswer(answer=text, source="claude")
-        except Exception:
-            # Se degrada al siguiente proveedor sin exponer detalles de la excepción ni la clave.
-            pass
+        except Exception as error:
+            # Se degrada al siguiente proveedor; solo se registra el tipo de fallo, nunca la clave ni el cuerpo.
+            logger.warning("Claude no respondió (%s)", describe_failure(error))
     if llm:
         try:
             text = ask_llm(question, context, llm, transport)
             if text:
                 return CoachAnswer(answer=text, source="claude")
-        except Exception:
-            pass
+        except Exception as error:
+            logger.warning("El modelo %s no respondió (%s); se usan las reglas", llm.model, describe_failure(error))
     return CoachAnswer(answer=rule_based_answer(question, context), source="rules")
