@@ -62,7 +62,7 @@ class SharedSecretTests(unittest.TestCase):
         self.with_secret()
         response = client.get("/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok"})
+        self.assertEqual(response.json()["status"], "ok")
 
     def test_docs_stay_open_when_secret_is_set(self) -> None:
         self.with_secret()

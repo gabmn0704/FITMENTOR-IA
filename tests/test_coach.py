@@ -10,6 +10,7 @@ from app.coach import (
     CLAUDE_MODEL,
     DEFAULT_TIP,
     EXERCISE_TIPS,
+    GREETING_REPLIES,
     KEYWORD_TIPS,
     CoachAnswer,
     CoachContext,
@@ -59,8 +60,8 @@ class RulesTests(unittest.TestCase):
     def test_default_tip_when_nothing_matches(self) -> None:
         self.assertEqual(rule_based_answer("¿Quién ganó el mundial?"), DEFAULT_TIP)
 
-    def test_greeting_introduces_the_coach(self) -> None:
-        self.assertIn("coach", rule_based_answer("hola").lower())
+    def test_greeting_is_one_of_the_friendly_replies(self) -> None:
+        self.assertIn(rule_based_answer("hola"), GREETING_REPLIES)
 
     def test_low_score_and_reps_are_mentioned(self) -> None:
         answer = rule_based_answer("¿Cuántas repeticiones llevo?", CoachContext(score=40, reps=7))
