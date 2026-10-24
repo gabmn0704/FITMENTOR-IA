@@ -3,7 +3,7 @@ import unittest
 from app.coach import (
     DEFAULT_TIP,
     EXERCISE_TIPS,
-    GREETING_REPLY,
+    GREETING_REPLIES,
     NUTRITION_ADVICE,
     OFF_TOPIC_REPLY,
     PAIN_ADVICE,
@@ -93,10 +93,10 @@ class MotivationAndGreetingTests(unittest.TestCase):
         self.assertIn("serie corta", answer)
 
     def test_greeting_without_exercise(self) -> None:
-        self.assertEqual(rule_based_answer("¡Hola!"), GREETING_REPLY)
+        self.assertIn(rule_based_answer("¡Hola!"), GREETING_REPLIES)
 
     def test_identity_question_is_answered_as_the_coach(self) -> None:
-        self.assertEqual(rule_based_answer("¿Quién eres?"), GREETING_REPLY)
+        self.assertIn(rule_based_answer("¿Quién eres?"), GREETING_REPLIES)
 
     def test_greeting_with_an_exercise_question_gets_the_technique(self) -> None:
         answer = rule_based_answer("Hola, ¿cómo hago la plancha?")
