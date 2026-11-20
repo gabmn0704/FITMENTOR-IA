@@ -912,6 +912,11 @@ def describe_failure(error: Exception) -> str:
         return f"HTTP {error.response.status_code}"
     return type(error).__name__
 
+
+# Último motivo de fallo por proveedor (solo código HTTP o tipo de error): se muestra en /health para diagnosticar.
+_last_failure: dict[str, str] = {}
+
+
 class _Breaker:
     """Disyuntor simple por proveedor: evita esperar a un servicio que acaba de fallar."""
 
@@ -954,6 +959,7 @@ _cache_lock = Lock()
 def clear_state() -> None:
     """Vacía la caché y el disyuntor (para pruebas)."""
     breaker.reset()
+    _last_failure.clear()
     with _cache_lock:
         _cache.clear()
 
@@ -970,8 +976,8 @@ def coach_status(api_key: str | None, llm: LlmConfig | None) -> dict[str, object
     mode = "claude" if api_key else "llm" if llm else "rules"
     return {
         "mode": mode,
-        "claude": {"configured": bool(api_key), "paused": breaker.is_open("claude")},
-        "llm": {"configured": llm is not None, "paused": breaker.is_open("llm")},
+        "claude": {"configured": bool(api_key), "paused": breaker.is_open("claude"), "last_error": _last_failure.get("claude")},
+        "llm": {"configured": llm is not None, "paused": breaker.is_open("llm"), "last_error": _last_failure.get("llm")},
         "rules": True,
     }
 
@@ -1016,6 +1022,7 @@ def answer_coach(
             except Exception as error:
                 # Se degrada al siguiente proveedor; solo se registra el tipo de fallo, nunca la clave ni el cuerpo.
                 logger.warning("El proveedor %s no respondió (%s)", name, describe_failure(error))
+                _last_failure[name] = describe_failure(error)
                 breaker.failure(name)
                 continue
             if text and has_slang(text):
@@ -1025,6 +1032,7 @@ def answer_coach(
                 continue
             if text:
                 breaker.success(name)
+                _last_failure.pop(name, None)
                 with _cache_lock:
                     _cache.set(key, (time.monotonic() + CACHE_TTL_SECONDS, text))
                 return CoachAnswer(answer=text, source="claude")
