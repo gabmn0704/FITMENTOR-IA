@@ -37,7 +37,8 @@ class HealthTests(unittest.TestCase):
     def test_health_returns_ok(self) -> None:
         response = client.get("/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok"})
+        self.assertEqual(response.json()["status"], "ok")
+        self.assertIn(response.json()["coach"]["mode"], ("claude", "llm", "rules"))
 
 
 class AnalyzeSessionTests(unittest.TestCase):

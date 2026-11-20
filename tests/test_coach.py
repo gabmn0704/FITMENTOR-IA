@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.coach import (
     CLAUDE_MODEL,
+    MAX_TOKENS,
     DEFAULT_TIP,
     EXERCISE_TIPS,
     KEYWORD_TIPS,
@@ -93,7 +94,7 @@ class AnswerCoachTests(unittest.TestCase):
         self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
         body = json.loads(request.content)
         self.assertEqual(body["model"], CLAUDE_MODEL)
-        self.assertEqual(body["max_tokens"], 1024)
+        self.assertEqual(body["max_tokens"], MAX_TOKENS)
         self.assertEqual(body["output_config"], {"effort": "low"})
         self.assertIn("español", body["system"])
         self.assertIn("ejercicio: squat", body["messages"][0]["content"])

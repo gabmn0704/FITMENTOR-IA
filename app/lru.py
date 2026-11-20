@@ -37,3 +37,7 @@ class LRUCache(Generic[K, V]):
     def delete(self, key: K) -> bool:
         with self._lock:
             return self._items.pop(key, None) is not None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()

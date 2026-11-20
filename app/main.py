@@ -7,7 +7,15 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, FastAPI
 from pydantic import BaseModel, Field, StringConstraints
 
-from app.coach import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, CoachAnswer, CoachContext, LlmConfig, answer_coach
+from app.coach import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    CoachAnswer,
+    CoachContext,
+    LlmConfig,
+    answer_coach,
+    coach_status,
+)
 from app.lru import LRUCache
 from app.reps import Phase, RepSessionStore
 from app.security import require_shared_secret, warn_if_unprotected
@@ -138,9 +146,26 @@ def line_deviation(
     return round(distance / line_length, 3)
 
 
+def _coach_config() -> tuple[str | None, LlmConfig | None]:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
+    llm_key = os.environ.get("LLM_API_KEY", "").strip()
+    llm = (
+        LlmConfig(
+            api_key=llm_key,
+            base_url=os.environ.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL,
+            model=os.environ.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
+        )
+        if llm_key
+        else None
+    )
+    return api_key, llm
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    """Siempre abierto y sin llamadas externas: solo informa qué proveedores del coach hay y si están en pausa."""
+    api_key, llm = _coach_config()
+    return {"status": "ok", "coach": coach_status(api_key, llm)}
 
 
 JOINT_LABELS = {
@@ -342,17 +367,7 @@ def analyze_endpoint(request: PoseRequest) -> PoseResponse:
 
 @protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
-    llm_key = os.environ.get("LLM_API_KEY", "").strip()
-    llm = (
-        LlmConfig(
-            api_key=llm_key,
-            base_url=os.environ.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL,
-            model=os.environ.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
-        )
-        if llm_key
-        else None
-    )
+    api_key, llm = _coach_config()
     return answer_coach(request.question, request.context, api_key, llm=llm)
 
 

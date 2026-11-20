@@ -1,32 +1,51 @@
+import hashlib
 import re
+import time
 import unicodedata
+from threading import Lock
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field
+
+from app.lru import LRUCache
 
 CLAUDE_MODEL = "claude-haiku-5-5"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 # Haiku 5.5 piensa por defecto y el razonamiento cuenta dentro de max_tokens: se deja margen
 # para que el texto final (máximo tres frases) no quede cortado.
-MAX_TOKENS = 1024
-TIMEOUT_SECONDS = 8.0
+MAX_TOKENS = 700
+# El LLM solo enriquece: si tarda, se responde ya por reglas. Presupuesto total por pregunta y tope por proveedor.
+TIMEOUT_SECONDS = 4.0
+TOTAL_BUDGET_SECONDS = 5.0
+LLM_MAX_TOKENS = 450
+# Disyuntor: tras `BREAKER_FAILURES` fallos seguidos se salta ese proveedor durante `BREAKER_COOLDOWN` segundos.
+BREAKER_FAILURES = 2
+BREAKER_COOLDOWN = 60.0
+CACHE_TTL_SECONDS = 600.0
+CACHE_CAPACITY = 256
 # Límite de caracteres de la respuesta de Claude que se devuelve al cliente.
 MAX_ANSWER_CHARS = 900
 
 SYSTEM_PROMPT = (
     "Eres el coach de FitMentor, una app de entrenamiento con corrección de postura. Hablas en español "
-    "latino, de tú, como un entrenador cercano que conoce a la persona: natural, claro y sin sonar a "
-    "robot. Nunca digas \"como asistente\", \"como IA\" ni empieces con frases de relleno; ve directo a lo "
-    "que preguntan. Responde en un párrafo corto (de dos a cinco frases, sin listas largas ni títulos), "
-    "con una acción concreta (qué cambiar o qué hacer hoy) y, si ayuda, el siguiente paso. "
-    "Si hay <perfil>, úsalo para personalizar (objetivo, peso, semana del plan, calorías y proteína) "
-    "sin recitar todos los datos; si falta un dato clave para responder bien, haz una sola pregunta "
-    "al final. Si hay <conversacion>, sigue el hilo y no repitas lo ya dicho. Usa las métricas de la "
-    "sesión (precisión, repeticiones, ángulo medio, nivel) cuando aparezcan y adapta el consejo al nivel: "
-    "principiante (técnica básica y descansos), intermedio (volumen y tempo), avanzado (carga y tempo "
-    "controlado). Límites de seguridad: no hagas diagnósticos ni sustituyas a un profesional sanitario; "
+    "colombiano natural, de tú, como un entrenador cercano que motiva: claro, directo y sin sonar a "
+    "robot. Nunca digas \"como asistente\" ni \"como IA\" ni empieces con relleno; ve al grano. "
+    "Formato: primero una frase con la respuesta directa; luego, si hace falta, de dos a cinco frases "
+    "cortas o hasta tres viñetas con \"- \" con los pasos concretos (qué cambiar o hacer hoy); cierra con "
+    "una línea breve de ánimo o el siguiente paso. Sin títulos ni párrafos largos. "
+    "Si hay <perfil>, úsalo para personalizar (objetivo, nivel, lesiones, peso, semana del plan, calorías "
+    "y proteína) sin recitar todos los datos: si hay lesiones, propón variantes que las cuiden y nunca "
+    "cargues esa zona; si falta un dato clave, haz una sola pregunta al final. Si hay <conversacion>, "
+    "sigue el hilo y no repitas lo ya dicho. Usa las métricas de la sesión (precisión, repeticiones, "
+    "ángulo medio, nivel) cuando aparezcan y adapta el consejo al nivel: principiante (técnica básica y "
+    "descansos), intermedio (volumen y tempo), avanzado (carga y tempo controlado). "
+    "Nutrición: da ejemplos de comida colombiana real y económica (huevos, pollo o pechuga, carne magra, "
+    "pescado, frijoles, lentejas, garbanzos, arroz, arepa, plátano, yuca, papa, avena, aguacate, frutas "
+    "como banano, guayaba o mango, jugos sin azúcar añadida) con porciones aproximadas; si es vegetariano, "
+    "usa huevo, lácteos, legumbres y tofu. "
+    "Límites de seguridad: no hagas diagnósticos ni sustituyas a un profesional sanitario; "
     "si la persona menciona dolor, lesión, mareo u opresión en el pecho, recomiéndale detenerse y "
     "consultar a un profesional de la salud. La nutrición es orientación general, indicando que no es "
     "consejo médico, y nunca recomiendes comer por debajo de 1200 kcal ni dietas extremas. Hablas de "
@@ -283,10 +302,11 @@ GREETING_REPLY = (
     "tus descansos o tu siguiente objetivo."
 )
 NUTRITION_ADVICE = (
-    "Orientación general, no es consejo médico ni nutricional personalizado: reparte la proteína en "
-    "las comidas del día (se suele recomendar entre 1,6 y 2,2 g por kg de peso a quien entrena), "
-    "incluye verduras y carbohidratos de calidad, y bebe agua antes, durante y después del entreno. "
-    "Para suplementos o una dieta concreta, consulta a un profesional."
+    "Orientación general, no es consejo médico ni nutricional personalizado. Reparte la proteína en las "
+    "comidas (entre 1,6 y 2,2 g por kg de peso si entrenas): huevos o pollo en el desayuno y el almuerzo, "
+    "frijoles o lentejas con arroz, pescado o carne magra. Acompaña con arepa, plátano, yuca o papa en "
+    "porciones moderadas, ensalada o verduras, y fruta (banano, guayaba, mango). Toma agua antes, durante "
+    "y después de entrenar. Para suplementos o una dieta concreta, consulta a un profesional."
 )
 REST_ADVICE: dict[str, str] = {
     "BEGINNER": "Descansa de 60 a 90 segundos entre series y deja 48 horas entre sesiones del mismo grupo muscular.",
@@ -391,6 +411,17 @@ ROUTINE_BY_LEVEL: dict[str, str] = {
 ROUTINE_DEFAULT = ROUTINE_BY_LEVEL["BEGINNER"]
 
 
+INJURY_NAMES: dict[str, str] = {
+    "knee": "rodilla",
+    "back": "espalda",
+    "shoulder": "hombro",
+    "wrist": "muñeca",
+    "ankle": "tobillo",
+    "hip": "cadera",
+    "neck": "cuello",
+    "elbow": "codo",
+}
+
 GOAL_NAMES: dict[str, str] = {
     "lose_fat": "bajar de peso",
     "build_muscle": "ganar masa muscular",
@@ -415,6 +446,10 @@ class CoachProfile(BaseModel):
     diet: Literal["omnivore", "vegetarian"] | None = None
     kcal: int | None = Field(default=None, ge=800, le=6000)
     protein_g: int | None = Field(default=None, ge=0, le=400)
+    # Zonas con lesión o molestia previa. Solo enumeración: nada de texto libre en el prompt.
+    injuries: list[Literal["knee", "back", "shoulder", "wrist", "ankle", "hip", "neck", "elbow"]] = Field(
+        default_factory=list, max_length=8
+    )
 
 
 class CoachTurn(BaseModel):
@@ -538,6 +573,9 @@ def profile_summary(profile: CoachProfile | None) -> str | None:
         parts.append(f"entrena {profile.days_per_week} días por semana")
     if profile.diet:
         parts.append("alimentación vegetariana" if profile.diet == "vegetarian" else "come de todo")
+    if profile.injuries:
+        zones = ", ".join(INJURY_NAMES[zone] for zone in dict.fromkeys(profile.injuries))
+        parts.append(f"lesiones o molestias previas en: {zones}")
     if profile.kcal is not None:
         parts.append(f"plan de {profile.kcal} kcal al día")
     if profile.protein_g is not None:
@@ -680,6 +718,7 @@ def ask_claude(
     context: CoachContext,
     api_key: str,
     transport: httpx.BaseTransport | None = None,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> str | None:
     payload = {
         "model": CLAUDE_MODEL,
@@ -695,7 +734,7 @@ def ask_claude(
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+    with httpx.Client(timeout=timeout, transport=transport) as client:
         response = client.post(ANTHROPIC_URL, headers=headers, json=payload)
     response.raise_for_status()
 
@@ -729,11 +768,12 @@ def ask_llm(
     context: CoachContext,
     config: LlmConfig,
     transport: httpx.BaseTransport | None = None,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> str | None:
     """Pregunta a un modelo compatible con OpenAI. Devuelve None si la respuesta viene vacía."""
     payload = {
         "model": config.model,
-        "max_tokens": 500,
+        "max_tokens": LLM_MAX_TOKENS,
         "temperature": 0.5,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -742,7 +782,7 @@ def ask_llm(
     }
     headers = {"content-type": "application/json", "authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
-    with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+    with httpx.Client(timeout=timeout, transport=transport) as client:
         response = client.post(url, headers=headers, json=payload)
     response.raise_for_status()
 
@@ -764,6 +804,68 @@ def clip_answer(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
     return head.rstrip()
 
 
+class _Breaker:
+    """Disyuntor simple por proveedor: evita esperar a un servicio que acaba de fallar."""
+
+    def __init__(self) -> None:
+        self._failures: dict[str, int] = {}
+        self._open_until: dict[str, float] = {}
+        self._lock = Lock()
+
+    def allows(self, name: str) -> bool:
+        with self._lock:
+            return time.monotonic() >= self._open_until.get(name, 0.0)
+
+    def success(self, name: str) -> None:
+        with self._lock:
+            self._failures[name] = 0
+            self._open_until.pop(name, None)
+
+    def failure(self, name: str) -> None:
+        with self._lock:
+            count = self._failures.get(name, 0) + 1
+            self._failures[name] = count
+            if count >= BREAKER_FAILURES:
+                self._open_until[name] = time.monotonic() + BREAKER_COOLDOWN
+                self._failures[name] = 0
+
+    def is_open(self, name: str) -> bool:
+        return not self.allows(name)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._failures.clear()
+            self._open_until.clear()
+
+
+breaker = _Breaker()
+_cache: LRUCache[str, tuple[float, str]] = LRUCache(CACHE_CAPACITY)
+_cache_lock = Lock()
+
+
+def clear_state() -> None:
+    """Vacía la caché y el disyuntor (para pruebas)."""
+    breaker.reset()
+    with _cache_lock:
+        _cache.clear()
+
+
+def _cache_key(question: str, context: CoachContext) -> str:
+    raw = _user_message(question, context) + "|" + _key(question)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def coach_status(api_key: str | None, llm: LlmConfig | None) -> dict[str, object]:
+    """Estado del coach para /health: qué proveedores hay configurados y si están en pausa."""
+    mode = "claude" if api_key else "llm" if llm else "rules"
+    return {
+        "mode": mode,
+        "claude": {"configured": bool(api_key), "paused": breaker.is_open("claude")},
+        "llm": {"configured": llm is not None, "paused": breaker.is_open("llm")},
+        "rules": True,
+    }
+
+
 def answer_coach(
     question: str,
     context: CoachContext | None = None,
@@ -774,24 +876,40 @@ def answer_coach(
     """Responde con un modelo (Claude, o un proveedor compatible con OpenAI) y, si falla, con reglas.
 
     `source` vale "claude" cuando contestó un modelo de lenguaje, sea cual sea el proveedor.
+    Las reglas son la respuesta inmediata de respaldo: el modelo solo enriquece y tiene un
+    presupuesto total corto, un disyuntor por proveedor y una caché de respuestas repetidas.
     """
     context = context or CoachContext()
     # El dolor se responde siempre de forma determinista, antes de llamar a ningún modelo.
     if is_pain(question):
         return CoachAnswer(answer=PAIN_ADVICE, source="rules")
-    if api_key:
-        try:
-            text = ask_claude(question, context, api_key, transport)
+
+    if api_key or llm:
+        key = _cache_key(question, context)
+        with _cache_lock:
+            hit = _cache.get(key)
+        if hit and hit[0] > time.monotonic():
+            return CoachAnswer(answer=hit[1], source="claude")
+
+        deadline = time.monotonic() + TOTAL_BUDGET_SECONDS
+        providers: list[tuple[str, object]] = []
+        if api_key:
+            providers.append(("claude", lambda t: ask_claude(question, context, api_key, transport, timeout=t)))
+        if llm:
+            providers.append(("llm", lambda t: ask_llm(question, context, llm, transport, timeout=t)))
+        for name, call in providers:
+            remaining = deadline - time.monotonic()
+            if remaining < 0.3 or not breaker.allows(name):
+                continue
+            try:
+                text = call(min(TIMEOUT_SECONDS, remaining))  # type: ignore[operator]
+            except Exception:
+                # Se degrada al siguiente proveedor sin exponer detalles de la excepción ni la clave.
+                breaker.failure(name)
+                continue
             if text:
+                breaker.success(name)
+                with _cache_lock:
+                    _cache.set(key, (time.monotonic() + CACHE_TTL_SECONDS, text))
                 return CoachAnswer(answer=text, source="claude")
-        except Exception:
-            # Se degrada al siguiente proveedor sin exponer detalles de la excepción ni la clave.
-            pass
-    if llm:
-        try:
-            text = ask_llm(question, context, llm, transport)
-            if text:
-                return CoachAnswer(answer=text, source="claude")
-        except Exception:
-            pass
     return CoachAnswer(answer=rule_based_answer(question, context), source="rules")
