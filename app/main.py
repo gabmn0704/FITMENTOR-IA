@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from threading import Lock
@@ -10,21 +11,31 @@ from pydantic import BaseModel, Field, StringConstraints
 from app.coach import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_TIP,
     CoachAnswer,
     CoachContext,
     LlmConfig,
+    SessionSummary,
+    SessionSummaryRequest,
     answer_coach,
+    close_http_client,
     coach_status,
+    rule_based_answer,
+    session_summary,
 )
 from app.lru import LRUCache
 from app.reps import Phase, RepSessionStore
 from app.security import require_shared_secret, warn_if_unprotected
 
 
+logger = logging.getLogger("fitmentor.api")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     warn_if_unprotected()
     yield
+    close_http_client()
 
 
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0", lifespan=lifespan)
@@ -162,6 +173,7 @@ def _coach_config() -> tuple[str | None, LlmConfig | None]:
 
 
 @app.get("/health")
+@app.head("/health", include_in_schema=False)
 def health() -> dict[str, object]:
     """Siempre abierto y sin llamadas externas: solo informa qué proveedores del coach hay y si están en pausa."""
     api_key, llm = _coach_config()
@@ -178,20 +190,20 @@ JOINT_LABELS = {
 }
 
 
-GOOD_FORM = "Buena posición, así vas bien. Sigue controlado y respira constante."
+GOOD_FORM = "Buena posición: mantén el control y respira de forma constante."
 # Segunda formulación de cada aviso, para no repetir la misma frase frame tras frame.
 ALTERNATIVES: dict[str, str] = {
-    "Baja un poco más: cadera atrás y talones firmes en el piso.": "Un poquito más abajo, empuja la cadera hacia atrás.",
-    "Reduce la profundidad: sube un poquito y controla la bajada.": "Muy abajo: sube un poco y baja más despacio.",
-    "Baja un poco más, controlando la rodilla de adelante.": "Dale, baja un poco más con la rodilla de adelante firme.",
-    "Reduce la profundidad: la rodilla debe quedar sobre el pie.": "Menos profundo: cuida que la rodilla quede sobre el pie.",
-    "Baja más el pecho: flexiona los codos hasta unos 90 grados.": "Acércate más al piso doblando los codos.",
-    "Reduce la profundidad: no bajes tanto y mantén los hombros firmes.": "Sube un poco: no bajes tanto y cuida los hombros.",
-    "Cuerpo en línea recta: no dejes caer ni subas la cadera.": "Cadera a la altura de los hombros, como una tabla.",
-    "Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.": "Aprieta abdomen y glúteos: cuerpo recto como una tabla.",
-    "Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.": "Empuja la cadera hacia atrás y baja el torso, rodillas suaves.",
+    "Baja un poco más: cadera atrás y talones firmes en el piso.": "Baja un poco más y lleva la cadera hacia atrás.",
+    "Reduce la profundidad: sube un poco y controla la bajada.": "Bajas demasiado: sube un poco y desciende más despacio.",
+    "Baja un poco más, controlando la rodilla delantera.": "Baja un poco más con la rodilla delantera estable.",
+    "Reduce la profundidad: la rodilla debe quedar sobre el pie.": "Baja menos: mantén la rodilla alineada sobre el pie.",
+    "Baja más el pecho: flexiona los codos hasta unos 90 grados.": "Acerca el pecho al suelo flexionando los codos.",
+    "Reduce la profundidad: no bajes tanto y mantén los hombros firmes.": "Baja menos para proteger los hombros.",
+    "Cuerpo en línea recta: no dejes caer ni subas la cadera.": "Mantén la cadera a la altura de los hombros.",
+    "Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.": "Activa abdomen y glúteos para mantener el cuerpo recto.",
+    "Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.": "Lleva la cadera atrás y baja el torso con las rodillas flexionadas.",
     "Reduce la inclinación: sube un poco el torso y deja la espalda firme.": "Sube un poco el torso y mantén la espalda recta.",
-    GOOD_FORM: "¡Muy bien, así mismo! Mantén ese ritmo.",
+    GOOD_FORM: "Muy bien: mantén este ritmo y esta técnica.",
 }
 _last_message: LRUCache[str, tuple[str, int]] = LRUCache(SESSION_CACHE)
 _message_lock = Lock()
@@ -220,13 +232,14 @@ def _not_analyzed(
     overlapping: bool = False,
 ) -> tuple[PoseResponse, None]:
     """Frame sin análisis. `overlapping` indica que los puntos se solapan en la imagen."""
-    visible_names = ", ".join(JOINT_LABELS[name] for name in joints)
+    labels = [JOINT_LABELS[name] for name in joints]
+    visible_names = ", ".join(labels[:-1]) + f" y {labels[-1]}" if len(labels) > 1 else "".join(labels)
     if overlapping:
         feedback = [
-            f"No te veo bien: aléjate un poco de la cámara para que se vea todo el cuerpo."
+            "No se distingue la postura: aléjate de la cámara para que se vea todo el cuerpo."
         ]
     else:
-        feedback = [f"No alcanzo a verte: colócate de lado y que se vean {visible_names}."]
+        feedback = [f"No se detecta tu cuerpo: colócate de lado para que se vean {visible_names}."]
     response = PoseResponse(
         score=0,
         feedback=feedback,
@@ -283,7 +296,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
         if knee_angle > 115:
             add("Baja un poco más: cadera atrás y talones firmes en el piso.", knee_angle - 115, 0.65, 55)
         elif knee_angle < 65:
-            add("Reduce la profundidad: sube un poquito y controla la bajada.", 65 - knee_angle, 0.7, 40)
+            add("Reduce la profundidad: sube un poco y controla la bajada.", 65 - knee_angle, 0.7, 40)
 
     elif request.exercise == "lunge":
         knee_angle = angle(*selected, width, height)
@@ -291,7 +304,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 100:
-            add("Baja un poco más, controlando la rodilla de adelante.", knee_angle - 100, 0.6, 45)
+            add("Baja un poco más, controlando la rodilla delantera.", knee_angle - 100, 0.6, 45)
         elif knee_angle < 80:
             add("Reduce la profundidad: la rodilla debe quedar sobre el pie.", 80 - knee_angle, 0.7, 40)
 
@@ -357,18 +370,43 @@ def analyze(request: PoseRequest) -> PoseResponse:
     return evaluate(request)[0]
 
 
+UNAVAILABLE_MESSAGE = "No se pudo analizar este movimiento: mantén la posición y continúa."
+
+
 @protected.post("/analyze", response_model=PoseResponse)
 def analyze_endpoint(request: PoseRequest) -> PoseResponse:
-    response, primary_angle = evaluate(request)
-    update = sessions.update(request.session_id, request.exercise, primary_angle)
-    response = response.model_copy(update={"phase": update.phase, "reps": update.reps})
-    return vary_repeats(request.session_id, response)
+    try:
+        response, primary_angle = evaluate(request)
+        update = sessions.update(request.session_id, request.exercise, primary_angle)
+        response = response.model_copy(update={"phase": update.phase, "reps": update.reps})
+        return vary_repeats(request.session_id, response)
+    except Exception:
+        # Red de seguridad: un fallo inesperado nunca debe cortar el entrenamiento con un 500.
+        logger.exception("Fallo inesperado al analizar un frame")
+        return PoseResponse(
+            score=0, feedback=[UNAVAILABLE_MESSAGE], confidence=0, analyzed=False, message=UNAVAILABLE_MESSAGE
+        )
 
 
 @protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
     api_key, llm = _coach_config()
-    return answer_coach(request.question, request.context, api_key, llm=llm)
+    try:
+        return answer_coach(request.question, request.context, api_key, llm=llm)
+    except Exception:
+        # Red de seguridad: si algo inesperado falla, siempre hay una respuesta válida por reglas.
+        logger.exception("Fallo inesperado en el coach; se responde por reglas")
+        try:
+            return CoachAnswer(answer=rule_based_answer(request.question, request.context), source="rules")
+        except Exception:
+            return CoachAnswer(answer=DEFAULT_TIP, source="rules")
+
+
+
+@protected.post("/session/summary", response_model=SessionSummary)
+def summary_endpoint(request: SessionSummaryRequest) -> SessionSummary:
+    """Resumen de una sesión terminada: instantáneo, por reglas y sin llamar a ningún modelo."""
+    return session_summary(request)
 
 
 app.include_router(protected)

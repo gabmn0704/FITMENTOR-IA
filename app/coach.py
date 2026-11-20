@@ -33,8 +33,10 @@ MAX_ANSWER_CHARS = 900
 
 SYSTEM_PROMPT = (
     "Eres el coach de FitMentor, una app de entrenamiento con corrección de postura. Hablas en español "
-    "colombiano natural, de tú, como un entrenador cercano que motiva: claro, directo y sin sonar a "
-    "robot. Nunca digas \"como asistente\" ni \"como IA\" ni empieces con relleno; ve al grano. "
+    "neutro, de tú, con un tono profesional, claro y motivador, como un entrenador personal certificado. "
+    "Prohibido usar jerga, modismos regionales, groserías o expresiones coloquiales; usa un vocabulario "
+    "que entienda cualquier hispanohablante. Nunca digas \"como asistente\" ni \"como IA\" ni empieces "
+    "con relleno; ve al grano. "
     "Formato: primero una frase con la respuesta directa; luego, si hace falta, de dos a cinco frases "
     "cortas o hasta tres viñetas con \"- \" con los pasos concretos (qué cambiar o hacer hoy); cierra con "
     "una línea breve de ánimo o el siguiente paso. Sin títulos ni párrafos largos. "
@@ -44,7 +46,7 @@ SYSTEM_PROMPT = (
     "sigue el hilo y no repitas lo ya dicho. Usa las métricas de la sesión (precisión, repeticiones, "
     "ángulo medio, nivel) cuando aparezcan y adapta el consejo al nivel: principiante (técnica básica y "
     "descansos), intermedio (volumen y tempo), avanzado (carga y tempo controlado). "
-    "Nutrición: da ejemplos de comida colombiana real y económica (huevos, pollo o pechuga, carne magra, "
+    "Nutrición: da ejemplos de comida latinoamericana real y económica (huevos, pollo o pechuga, carne magra, "
     "pescado, frijoles, lentejas, garbanzos, arroz, arepa, plátano, yuca, papa, avena, aguacate, frutas "
     "como banano, guayaba o mango, jugos sin azúcar añadida) con porciones aproximadas; si es vegetariano, "
     "usa huevo, lácteos, legumbres y tofu. "
@@ -144,7 +146,7 @@ MEAN_ANGLE_HINTS: dict[str, tuple[float, float, str, str]] = {
     "deadlift": (
         60,
         160,
-        "Casi no inclinas la cadera: lleva el culo hacia atrás en cada repetición.",
+        "Casi no inclinas la cadera: llévala hacia atrás en cada repetición.",
         "Inclinas demasiado el torso: reduce la inclinación y mantén la espalda estable.",
     ),
 }
@@ -301,9 +303,9 @@ OFF_TOPIC_REPLY = (
     "progresión o nutrición básica."
 )
 GREETING_REPLIES = (
-    "¡Hola! Qué bueno verte por aquí. ¿Qué quieres trabajar hoy: tu técnica, tu rutina o lo que vas a comer?",
+    "¡Hola! Me alegra verte por aquí. ¿Qué quieres trabajar hoy: tu técnica, tu rutina o tu alimentación?",
     "¡Buenas! Cuéntame cómo vas: ¿entrenaste hoy o estás por empezar? Con eso te digo por dónde seguir.",
-    "¡Hey, hola! Estoy listo para ayudarte. ¿Tienes alguna duda de un ejercicio, de tu plan o de la comida?",
+    "¡Hola! Estoy listo para ayudarte. ¿Tienes alguna duda sobre un ejercicio, tu plan o tu alimentación?",
     "¡Hola! Aquí estoy. Dime qué necesitas y lo vemos: postura, repeticiones, descanso o alimentación.",
 )
 GREETING_REPLY = GREETING_REPLIES[0]
@@ -374,7 +376,7 @@ SHORT_TIME_STEMS = ("15 min", "10 min", "20 min", "30 min", "poco tiempo", "rapi
 THANKS_REPLY = "¡De nada! Aquí estoy para lo que necesites: técnica, rutinas, descansos o progresión."
 GOODBYE_REPLY = "¡Hasta pronto! Descansa bien, hidrátate y vuelve cuando quieras entrenar."
 HELP_REPLY = (
-    "Estoy bien, ¡gracias por preguntar! Puedo ayudarte con tu técnica en sentadilla, flexión, plancha, "
+    "Gracias por preguntar. Puedo ayudarte con tu técnica en sentadilla, flexión, plancha, "
     "peso muerto y zancada, armarte una rutina, explicarte descansos, calentamiento, progresión de nivel "
     "y nutrición básica. Cuéntame qué quieres lograr."
 )
@@ -736,6 +738,47 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
     return _join(*body, *extras)
 
 
+# Tope de conexión: si el proveedor ni siquiera acepta la conexión rápido, se pasa al siguiente.
+CONNECT_TIMEOUT_SECONDS = 1.5
+_shared_client: httpx.Client | None = None
+_client_lock = Lock()
+
+
+def _http_client() -> httpx.Client:
+    """Cliente HTTP compartido: reutiliza conexiones TLS (keep-alive) y ahorra el apretón de manos en cada pregunta."""
+    global _shared_client
+    with _client_lock:
+        if _shared_client is None:
+            _shared_client = httpx.Client(
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=60.0)
+            )
+        return _shared_client
+
+
+def close_http_client() -> None:
+    """Cierra el cliente compartido (al apagar el servicio)."""
+    global _shared_client
+    with _client_lock:
+        if _shared_client is not None:
+            _shared_client.close()
+            _shared_client = None
+
+
+def _post(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    transport: httpx.BaseTransport | None,
+    timeout: float,
+) -> httpx.Response:
+    limits = httpx.Timeout(timeout, connect=min(CONNECT_TIMEOUT_SECONDS, timeout))
+    if transport is not None:
+        # Las pruebas inyectan un transporte simulado: cliente propio para no tocar el compartido.
+        with httpx.Client(transport=transport) as client:
+            return client.post(url, headers=headers, json=payload, timeout=limits)
+    return _http_client().post(url, headers=headers, json=payload, timeout=limits)
+
+
 def ask_claude(
     question: str,
     context: CoachContext,
@@ -757,8 +800,7 @@ def ask_claude(
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    with httpx.Client(timeout=timeout, transport=transport) as client:
-        response = client.post(ANTHROPIC_URL, headers=headers, json=payload)
+    response = _post(ANTHROPIC_URL, headers, payload, transport, timeout)
     response.raise_for_status()
 
     data = response.json()
@@ -805,8 +847,7 @@ def ask_llm(
     }
     headers = {"content-type": "application/json", "authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
-    with httpx.Client(timeout=timeout, transport=transport) as client:
-        response = client.post(url, headers=headers, json=payload)
+    response = _post(url, headers, payload, transport, timeout)
     response.raise_for_status()
 
     choices = response.json().get("choices") or []
@@ -825,6 +866,44 @@ def clip_answer(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
     if cut >= limit // 2:
         return head[: cut + 1].rstrip()
     return head.rstrip()
+
+
+# Jerga y coloquialismos que el coach nunca debe usar. Se comparan como palabra completa sobre el
+# texto normalizado (sin tildes). Si un modelo los usa, su respuesta se descarta y se usan las reglas.
+SLANG_WORDS = (
+    "parce",
+    "parcero",
+    "parcera",
+    "quiubo",
+    "quibo",
+    "chimba",
+    "bacano",
+    "bacana",
+    "berraco",
+    "berraca",
+    "marica",
+    "guevon",
+    "huevon",
+    "wey",
+    "guey",
+    "chamo",
+    "boludo",
+    "pibe",
+    "culo",
+    "vaina",
+    "nea",
+    "nero",
+    "mijo",
+    "mija",
+    "bro",
+    "papi",
+    "mami",
+)
+
+
+def has_slang(text: str) -> bool:
+    """True si el texto contiene jerga o coloquialismos prohibidos en el tono del coach."""
+    return _has_word(_key(text), SLANG_WORDS)
 
 
 def describe_failure(error: Exception) -> str:
@@ -880,7 +959,9 @@ def clear_state() -> None:
 
 
 def _cache_key(question: str, context: CoachContext) -> str:
-    raw = _user_message(question, context) + "|" + _key(question)
+    # La pregunta se normaliza (sin tildes, mayúsculas ni signos): "¿Cómo respiro?" y "como respiro" comparten caché.
+    normalized = re.sub(r"[^\w\s]", "", _key(question)).strip()
+    raw = _user_message("", context) + "|" + re.sub(r"\s+", " ", normalized)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -937,9 +1018,92 @@ def answer_coach(
                 logger.warning("El proveedor %s no respondió (%s)", name, describe_failure(error))
                 breaker.failure(name)
                 continue
+            if text and has_slang(text):
+                # Respuesta válida técnicamente pero fuera del tono: se intenta el siguiente proveedor.
+                logger.warning("El proveedor %s respondió con jerga; se descarta la respuesta", name)
+                breaker.success(name)
+                continue
             if text:
                 breaker.success(name)
                 with _cache_lock:
                     _cache.set(key, (time.monotonic() + CACHE_TTL_SECONDS, text))
                 return CoachAnswer(answer=text, source="claude")
     return CoachAnswer(answer=rule_based_answer(question, context), source="rules")
+
+
+EXERCISE_NAMES: dict[str, str] = {
+    "squat": "sentadilla",
+    "push_up": "flexiones",
+    "plank": "plancha",
+    "deadlift": "peso muerto",
+    "lunge": "zancada",
+}
+
+
+class SessionSummaryRequest(BaseModel):
+    """Métricas finales de una sesión. Todo opcional: con lo que haya se arma el resumen."""
+
+    exercise: str | None = Field(default=None, max_length=40)
+    reps: int | None = Field(default=None, ge=0, le=100_000)
+    score: float | None = Field(default=None, ge=0, le=100)
+    level: str | None = Field(default=None, max_length=40)
+    average_angle: float | None = Field(default=None, ge=0, le=180)
+    duration_seconds: int | None = Field(default=None, ge=0, le=86_400)
+
+
+class SessionSummary(BaseModel):
+    summary: str
+    highlights: list[str]
+    next_goal: str | None = None
+
+
+def _duration_text(seconds: int) -> str:
+    minutes, rest = divmod(seconds, 60)
+    if minutes == 0:
+        return f"{rest} segundos"
+    if rest == 0:
+        return f"{minutes} minuto" + ("s" if minutes != 1 else "")
+    return f"{minutes} min {rest} s"
+
+
+def session_summary(request: SessionSummaryRequest) -> SessionSummary:
+    """Resumen determinista e instantáneo de una sesión terminada (sin llamar a ningún modelo)."""
+    exercise = _canonical_exercise(request.exercise)
+    level = _canonical_level(request.level)
+    name = f"tu sesión de {EXERCISE_NAMES[exercise]}" if exercise else "tu sesión"
+
+    facts: list[str] = []
+    if exercise == "plank" and request.duration_seconds:
+        facts.append(f"{_duration_text(request.duration_seconds)} de plancha")
+    elif request.reps is not None:
+        facts.append(f"{request.reps} repetici" + ("ón" if request.reps == 1 else "ones"))
+    if request.score is not None:
+        facts.append(f"{round(request.score)}% de precisión")
+    detail = f": {' con '.join(facts)}" if facts else ""
+
+    if request.reps == 0 and exercise != "plank":
+        opening = f"Completaste {name} sin repeticiones registradas"
+    elif request.score is None:
+        opening = f"Completaste {name}"
+    elif request.score >= 85:
+        opening = f"Excelente trabajo en {name}"
+    elif request.score >= 60:
+        opening = f"Buen trabajo en {name}"
+    else:
+        opening = f"Terminaste {name}, y cada sesión suma"
+    summary = f"{opening}{detail}."
+
+    context = CoachContext(score=request.score, average_angle=request.average_angle)
+    highlights = [
+        note
+        for note in (_performance_note(context), _angle_note(context, exercise))
+        if note
+    ]
+    if request.reps == 0 and exercise != "plank":
+        highlights.insert(
+            0, "Si hiciste repeticiones y no se contaron, colócate de lado con el cuerpo completo visible y buena luz."
+        )
+    if not highlights:
+        highlights.append("Mantén la técnica controlada y la respiración constante en la próxima sesión.")
+    next_goal = _next_goal(exercise, level) if exercise else None
+    return SessionSummary(summary=summary, highlights=highlights[:3], next_goal=next_goal)
