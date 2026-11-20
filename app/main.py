@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from threading import Lock
@@ -10,16 +11,21 @@ from pydantic import BaseModel, Field, StringConstraints
 from app.coach import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_TIP,
     CoachAnswer,
     CoachContext,
     LlmConfig,
     answer_coach,
     close_http_client,
     coach_status,
+    rule_based_answer,
 )
 from app.lru import LRUCache
 from app.reps import Phase, RepSessionStore
 from app.security import require_shared_secret, warn_if_unprotected
+
+
+logger = logging.getLogger("fitmentor.api")
 
 
 @asynccontextmanager
@@ -164,6 +170,7 @@ def _coach_config() -> tuple[str | None, LlmConfig | None]:
 
 
 @app.get("/health")
+@app.head("/health", include_in_schema=False)
 def health() -> dict[str, object]:
     """Siempre abierto y sin llamadas externas: solo informa qué proveedores del coach hay y si están en pausa."""
     api_key, llm = _coach_config()
@@ -222,7 +229,8 @@ def _not_analyzed(
     overlapping: bool = False,
 ) -> tuple[PoseResponse, None]:
     """Frame sin análisis. `overlapping` indica que los puntos se solapan en la imagen."""
-    visible_names = ", ".join(JOINT_LABELS[name] for name in joints)
+    labels = [JOINT_LABELS[name] for name in joints]
+    visible_names = ", ".join(labels[:-1]) + f" y {labels[-1]}" if len(labels) > 1 else "".join(labels)
     if overlapping:
         feedback = [
             "No se distingue la postura: aléjate de la cámara para que se vea todo el cuerpo."
@@ -359,18 +367,36 @@ def analyze(request: PoseRequest) -> PoseResponse:
     return evaluate(request)[0]
 
 
+UNAVAILABLE_MESSAGE = "No se pudo analizar este movimiento: mantén la posición y continúa."
+
+
 @protected.post("/analyze", response_model=PoseResponse)
 def analyze_endpoint(request: PoseRequest) -> PoseResponse:
-    response, primary_angle = evaluate(request)
-    update = sessions.update(request.session_id, request.exercise, primary_angle)
-    response = response.model_copy(update={"phase": update.phase, "reps": update.reps})
-    return vary_repeats(request.session_id, response)
+    try:
+        response, primary_angle = evaluate(request)
+        update = sessions.update(request.session_id, request.exercise, primary_angle)
+        response = response.model_copy(update={"phase": update.phase, "reps": update.reps})
+        return vary_repeats(request.session_id, response)
+    except Exception:
+        # Red de seguridad: un fallo inesperado nunca debe cortar el entrenamiento con un 500.
+        logger.exception("Fallo inesperado al analizar un frame")
+        return PoseResponse(
+            score=0, feedback=[UNAVAILABLE_MESSAGE], confidence=0, analyzed=False, message=UNAVAILABLE_MESSAGE
+        )
 
 
 @protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
     api_key, llm = _coach_config()
-    return answer_coach(request.question, request.context, api_key, llm=llm)
+    try:
+        return answer_coach(request.question, request.context, api_key, llm=llm)
+    except Exception:
+        # Red de seguridad: si algo inesperado falla, siempre hay una respuesta válida por reglas.
+        logger.exception("Fallo inesperado en el coach; se responde por reglas")
+        try:
+            return CoachAnswer(answer=rule_based_answer(request.question, request.context), source="rules")
+        except Exception:
+            return CoachAnswer(answer=DEFAULT_TIP, source="rules")
 
 
 app.include_router(protected)
