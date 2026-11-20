@@ -738,6 +738,47 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
     return _join(*body, *extras)
 
 
+# Tope de conexión: si el proveedor ni siquiera acepta la conexión rápido, se pasa al siguiente.
+CONNECT_TIMEOUT_SECONDS = 1.5
+_shared_client: httpx.Client | None = None
+_client_lock = Lock()
+
+
+def _http_client() -> httpx.Client:
+    """Cliente HTTP compartido: reutiliza conexiones TLS (keep-alive) y ahorra el apretón de manos en cada pregunta."""
+    global _shared_client
+    with _client_lock:
+        if _shared_client is None:
+            _shared_client = httpx.Client(
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=60.0)
+            )
+        return _shared_client
+
+
+def close_http_client() -> None:
+    """Cierra el cliente compartido (al apagar el servicio)."""
+    global _shared_client
+    with _client_lock:
+        if _shared_client is not None:
+            _shared_client.close()
+            _shared_client = None
+
+
+def _post(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    transport: httpx.BaseTransport | None,
+    timeout: float,
+) -> httpx.Response:
+    limits = httpx.Timeout(timeout, connect=min(CONNECT_TIMEOUT_SECONDS, timeout))
+    if transport is not None:
+        # Las pruebas inyectan un transporte simulado: cliente propio para no tocar el compartido.
+        with httpx.Client(transport=transport) as client:
+            return client.post(url, headers=headers, json=payload, timeout=limits)
+    return _http_client().post(url, headers=headers, json=payload, timeout=limits)
+
+
 def ask_claude(
     question: str,
     context: CoachContext,
@@ -759,8 +800,7 @@ def ask_claude(
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    with httpx.Client(timeout=timeout, transport=transport) as client:
-        response = client.post(ANTHROPIC_URL, headers=headers, json=payload)
+    response = _post(ANTHROPIC_URL, headers, payload, transport, timeout)
     response.raise_for_status()
 
     data = response.json()
@@ -807,8 +847,7 @@ def ask_llm(
     }
     headers = {"content-type": "application/json", "authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
-    with httpx.Client(timeout=timeout, transport=transport) as client:
-        response = client.post(url, headers=headers, json=payload)
+    response = _post(url, headers, payload, transport, timeout)
     response.raise_for_status()
 
     choices = response.json().get("choices") or []
@@ -920,7 +959,9 @@ def clear_state() -> None:
 
 
 def _cache_key(question: str, context: CoachContext) -> str:
-    raw = _user_message(question, context) + "|" + _key(question)
+    # La pregunta se normaliza (sin tildes, mayúsculas ni signos): "¿Cómo respiro?" y "como respiro" comparten caché.
+    normalized = re.sub(r"[^\w\s]", "", _key(question)).strip()
+    raw = _user_message("", context) + "|" + re.sub(r"\s+", " ", normalized)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

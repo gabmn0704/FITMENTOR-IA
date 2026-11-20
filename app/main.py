@@ -14,6 +14,7 @@ from app.coach import (
     CoachContext,
     LlmConfig,
     answer_coach,
+    close_http_client,
     coach_status,
 )
 from app.lru import LRUCache
@@ -25,6 +26,7 @@ from app.security import require_shared_secret, warn_if_unprotected
 async def lifespan(_app: FastAPI):
     warn_if_unprotected()
     yield
+    close_http_client()
 
 
 app = FastAPI(title="FitMentor Pose Service", version="1.0.0", lifespan=lifespan)
