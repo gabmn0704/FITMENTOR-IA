@@ -26,6 +26,28 @@ class LlmProviderTests(unittest.TestCase):
         transport = transport_for({"choices": [{"message": {"content": "  Claro, empieza con 3 series.  "}}]})
         self.assertEqual(ask_llm("rutina", CoachContext(), CONFIG, transport), "Claro, empieza con 3 series.")
 
+    def test_reasoning_models_get_low_effort_and_more_tokens(self) -> None:
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Listo."}}]})
+
+        config = LlmConfig(api_key="secret-key", model="openai/gpt-oss-20b")
+        self.assertEqual(ask_llm("hola", CoachContext(), config, httpx.MockTransport(handler)), "Listo.")
+        self.assertEqual(seen["reasoning_effort"], "low")
+        self.assertGreater(seen["max_tokens"], 450)
+
+    def test_other_models_do_not_get_reasoning_effort(self) -> None:
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Listo."}}]})
+
+        ask_llm("hola", CoachContext(), CONFIG, httpx.MockTransport(handler))
+        self.assertNotIn("reasoning_effort", seen)
+
     def test_answer_coach_marks_model_answers(self) -> None:
         transport = transport_for({"choices": [{"message": {"content": "Respuesta del modelo."}}]})
         answer = answer_coach("¿qué opinas del fútbol?", llm=CONFIG, transport=transport)
