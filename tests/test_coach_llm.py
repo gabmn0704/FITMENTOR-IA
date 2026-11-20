@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 
-from app.coach import CoachContext, LlmConfig, answer_coach, ask_llm
+from app.coach import CoachContext, LlmConfig, answer_coach, ask_llm, describe_failure
 
 
 def transport_for(body: dict, status: int = 200) -> httpx.MockTransport:
@@ -47,6 +47,12 @@ class LlmProviderTests(unittest.TestCase):
 
         ask_llm("hola", CoachContext(), CONFIG, httpx.MockTransport(handler))
         self.assertNotIn("reasoning_effort", seen)
+
+    def test_failure_description_includes_the_provider_reason(self) -> None:
+        transport = transport_for({"error": {"message": "The model `x` does not exist", "code": "model_not_found"}}, status=404)
+        with self.assertRaises(httpx.HTTPStatusError) as caught:
+            ask_llm("hola", CoachContext(), CONFIG, transport)
+        self.assertEqual(describe_failure(caught.exception), "HTTP 404 (model_not_found)")
 
     def test_answer_coach_marks_model_answers(self) -> None:
         transport = transport_for({"choices": [{"message": {"content": "Respuesta del modelo."}}]})

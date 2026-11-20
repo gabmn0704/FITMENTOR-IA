@@ -931,8 +931,24 @@ def has_slang(text: str) -> bool:
 def describe_failure(error: Exception) -> str:
     """Resumen del fallo de un proveedor para los registros: código HTTP o tipo de error, sin datos sensibles."""
     if isinstance(error, httpx.HTTPStatusError):
-        return f"HTTP {error.response.status_code}"
+        return f"HTTP {error.response.status_code}{_provider_reason(error.response)}"
     return type(error).__name__
+
+
+def _provider_reason(response: httpx.Response) -> str:
+    """Código o mensaje de error que devuelve el proveedor (p. ej. `model_not_found`), recortado y sin saltos de línea."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    detail = body.get("error") if isinstance(body, dict) else None
+    if isinstance(detail, dict):
+        reason = detail.get("code") or detail.get("message")
+    else:
+        reason = detail if isinstance(detail, str) else None
+    if not isinstance(reason, str) or not reason.strip():
+        return ""
+    return " (" + re.sub(r"\s+", " ", reason).strip()[:120] + ")"
 
 
 # Último motivo de fallo por proveedor (solo código HTTP o tipo de error): se muestra en /health para diagnosticar.
