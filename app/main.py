@@ -56,6 +56,18 @@ PRIMARY_ANGLE_KEYS: dict[str, str] = {
 }
 
 
+# Umbrales de forma de /analyze. "high": por encima se pide bajar más (ángulo muy abierto); "low": por
+# debajo se pide reducir la profundidad; "line": desvío máximo del cuerpo respecto a la recta hombro-tobillo
+# (fracción de su longitud). Calibrados con `python -m evals.pose_eval` (ver README, "Calidad y evaluación").
+LIMITS: dict[str, dict[str, float]] = {
+    "squat": {"high": 115, "low": 65},
+    "lunge": {"high": 110, "low": 70},
+    "push_up": {"high": 110, "low": 65, "line": 0.1},
+    "plank": {"line": 0.08},
+    "deadlift": {"high": 145, "low": 45},
+}
+
+
 # Límites de entrada: MediaPipe produce 33 landmarks; el backend descarta frames con más de 64.
 MAX_POINTS = 64
 MAX_NAME_LENGTH = 40
@@ -100,21 +112,28 @@ class PoseResponse(BaseModel):
     message: str = ""
 
 
-# Longitud mínima, en píxeles del encuadre, de un segmento para medir un ángulo.
-# Por debajo, dos landmarks prácticamente se solapan y el ángulo es ruido.
-MIN_SEGMENT_PX = 1.0
+# Longitud mínima de un segmento para medir un ángulo, como fracción del lado menor del encuadre
+# (0,15 %: ~1 px en 720p). Por debajo, dos landmarks prácticamente se solapan y el ángulo es ruido.
+# Es relativa porque `frame_width` y `frame_height` pueden ser píxeles reales o solo una proporción
+# (por defecto 16x9): un mínimo en píxeles absolutos rechazaría poses válidas con la proporción.
+MIN_SEGMENT_FRACTION = 0.0015
+
+
+def min_segment(frame_width: int, frame_height: int) -> float:
+    return MIN_SEGMENT_FRACTION * min(frame_width, frame_height)
 
 
 def angle(first: Point, vertex: Point, last: Point, frame_width: int, frame_height: int) -> float | None:
     """Ángulo en grados (0 a 180) en `vertex`, o None si no es medible.
 
-    Devuelve None si alguno de los dos segmentos mide menos de `MIN_SEGMENT_PX`: un 0° falso
+    Devuelve None si alguno de los dos segmentos mide menos de `min_segment`: un 0° falso
     parecería una flexión total y contaría repeticiones fantasma.
     """
     first_vector = ((first.x - vertex.x) * frame_width, (first.y - vertex.y) * frame_height)
     last_vector = ((last.x - vertex.x) * frame_width, (last.y - vertex.y) * frame_height)
     first_length, last_length = hypot(*first_vector), hypot(*last_vector)
-    if first_length < MIN_SEGMENT_PX or last_length < MIN_SEGMENT_PX:
+    minimum = min_segment(frame_width, frame_height)
+    if first_length < minimum or last_length < minimum:
         return None
     vector_size = first_length * last_length
     if not isfinite(vector_size):
@@ -149,7 +168,7 @@ def line_deviation(
     middle_x, middle_y = hip.x * frame_width, hip.y * frame_height
     end_x, end_y = ankle.x * frame_width, ankle.y * frame_height
     line_length = hypot(end_x - start_x, end_y - start_y)
-    if line_length < MIN_SEGMENT_PX:
+    if line_length < min_segment(frame_width, frame_height):
         return None
     cross = abs((end_x - start_x) * (start_y - middle_y) - (start_x - middle_x) * (end_y - start_y))
     distance = cross / line_length  # distancia del hip a la línea, en píxeles
@@ -293,55 +312,55 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
         if knee_angle is None:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
-        if knee_angle > 115:
-            add("Baja un poco más: cadera atrás y talones firmes en el piso.", knee_angle - 115, 0.65, 55)
-        elif knee_angle < 65:
-            add("Reduce la profundidad: sube un poco y controla la bajada.", 65 - knee_angle, 0.7, 40)
+        if knee_angle > LIMITS["squat"]["high"]:
+            add("Baja un poco más: cadera atrás y talones firmes en el piso.", knee_angle - LIMITS["squat"]["high"], 0.65, 55)
+        elif knee_angle < LIMITS["squat"]["low"]:
+            add("Reduce la profundidad: sube un poco y controla la bajada.", LIMITS["squat"]["low"] - knee_angle, 0.7, 40)
 
     elif request.exercise == "lunge":
         knee_angle = angle(*selected, width, height)
         if knee_angle is None:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
-        if knee_angle > 100:
-            add("Baja un poco más, controlando la rodilla delantera.", knee_angle - 100, 0.6, 45)
-        elif knee_angle < 80:
-            add("Reduce la profundidad: la rodilla debe quedar sobre el pie.", 80 - knee_angle, 0.7, 40)
+        if knee_angle > LIMITS["lunge"]["high"]:
+            add("Baja un poco más, controlando la rodilla delantera.", knee_angle - LIMITS["lunge"]["high"], 0.6, 45)
+        elif knee_angle < LIMITS["lunge"]["low"]:
+            add("Reduce la profundidad: la rodilla debe quedar sobre el pie.", LIMITS["lunge"]["low"] - knee_angle, 0.7, 40)
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)
         if elbow_angle is None:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["elbow"] = elbow_angle
-        if elbow_angle > 110:
-            add("Baja más el pecho: flexiona los codos hasta unos 90 grados.", elbow_angle - 110, 0.35, 35)
-        elif elbow_angle < 65:
-            add("Reduce la profundidad: no bajes tanto y mantén los hombros firmes.", 65 - elbow_angle, 0.7, 35)
+        if elbow_angle > LIMITS["push_up"]["high"]:
+            add("Baja más el pecho: flexiona los codos hasta unos 90 grados.", elbow_angle - LIMITS["push_up"]["high"], 0.35, 35)
+        elif elbow_angle < LIMITS["push_up"]["low"]:
+            add("Reduce la profundidad: no bajes tanto y mantén los hombros firmes.", LIMITS["push_up"]["low"] - elbow_angle, 0.7, 35)
         alignment = select_joints(by_name, ("shoulder", "hip", "ankle"))
         if alignment is not None:
             deviation = line_deviation(*alignment, width, height)
             if deviation is not None:
                 angles["body_line_deviation"] = deviation
-                if deviation > 0.1:
-                    add("Cuerpo en línea recta: no dejes caer ni subas la cadera.", deviation - 0.1, 120, 40)
+                if deviation > LIMITS["push_up"]["line"]:
+                    add("Cuerpo en línea recta: no dejes caer ni subas la cadera.", deviation - LIMITS["push_up"]["line"], 120, 40)
 
     elif request.exercise == "plank":
         deviation = line_deviation(*selected, width, height)
         if deviation is None:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["body_line_deviation"] = deviation
-        if deviation > 0.08:
-            add("Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.", deviation - 0.08, 150, 55)
+        if deviation > LIMITS["plank"]["line"]:
+            add("Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.", deviation - LIMITS["plank"]["line"], 150, 55)
 
     else:
         hip_angle = angle(*selected, width, height)
         if hip_angle is None:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["hip_hinge"] = hip_angle
-        if hip_angle > 145:
-            add("Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.", hip_angle - 145, 0.8, 45)
-        elif hip_angle < 45:
-            add("Reduce la inclinación: sube un poco el torso y deja la espalda firme.", 45 - hip_angle, 0.8, 45)
+        if hip_angle > LIMITS["deadlift"]["high"]:
+            add("Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.", hip_angle - LIMITS["deadlift"]["high"], 0.8, 45)
+        elif hip_angle < LIMITS["deadlift"]["low"]:
+            add("Reduce la inclinación: sube un poco el torso y deja la espalda firme.", LIMITS["deadlift"]["low"] - hip_angle, 0.8, 45)
 
     # Prioridad: la corrección que más puntos resta va primero y es la única que se dice en voz alta.
     found.sort(key=lambda item: -item[0])

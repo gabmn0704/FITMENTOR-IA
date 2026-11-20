@@ -11,10 +11,21 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Tests (los mismos que ejecuta el CI):
+Tests (los mismos que ejecuta el CI; `python -m pytest -q` también funciona):
 
 ```bash
 python -m unittest discover -s tests -v
+```
+
+Evaluaciones y pruebas de punta a punta (ver "Calidad y evaluación"):
+
+```bash
+python -m evals.pose_eval            # precisión/recall del análisis de pose contra poses sintéticas etiquetadas
+python -m evals.pose_eval --sweep    # barrido de umbrales
+python -m evals.coach_eval           # criterios del coach (offline, solo reglas)
+python -m evals.coach_eval --live    # además contra el proveedor, si hay ANTHROPIC_API_KEY o LLM_API_KEY
+python scripts/e2e_stack.py          # backend + IA levantados: invitado -> coach -> pose por STOMP -> sesión -> resumen
+python scripts/bench_analyze.py      # latencia de /analyze y /coach
 ```
 
 ## Variables de entorno
@@ -81,14 +92,15 @@ Respuesta:
 - `message` es la corrección principal (`feedback[0]`), siempre una sola frase.
 - `analyzed` es `false` si algún punto requerido tiene confianza menor de 0.55; entonces `score` es 0 y `feedback` pide volver a colocarse en el encuadre.
 - `knee_angle` está presente en `squat` y `lunge`; es `null` en el resto.
-- Si dos puntos de la articulación medida coinciden (ángulo no medible), el frame se marca como no analizado: nunca se devuelve un 0° falso.
+- Si dos puntos de la articulación medida coinciden (ángulo no medible), el frame se marca como no analizado: nunca se devuelve un 0° falso. "Coinciden" es relativo al encuadre (segmento menor del 0,15 % del lado menor), de modo que `frame_width` y `frame_height` pueden ser píxeles reales o solo una proporción.
+- Los umbrales de forma viven en `app/main.py` (`LIMITS`) y están calibrados con `evals/pose_eval.py`.
 
 Ángulo principal y umbrales de la máquina de repeticiones:
 
 | Ejercicio | Ángulo principal | Arriba (`up`) | Fondo (`bottom`) | Feedback de forma |
 | --- | --- | --- | --- | --- |
 | `squat` | rodilla | > 150° | < 105° | rodilla fuera de 65°–115° |
-| `lunge` | rodilla delantera | > 150° | < 105° | ideal 80°–100° |
+| `lunge` | rodilla delantera | > 150° | < 105° | rodilla fuera de 70°–110° |
 | `push_up` | codo | > 150° | < 90° | codo y alineación hombro-cadera-tobillo |
 | `deadlift` | bisagra de cadera | > 155° | < 115° | cadera fuera de 45°–145° |
 | `plank` | — (isométrico) | — | — | alineación; `phase` siempre `hold` y `reps` 0 |
@@ -159,9 +171,76 @@ Respuesta:
 
 En `plank` se usa `duration_seconds` en lugar de `reps`. Con 0 repeticiones se sugiere revisar el encuadre de la cámara.
 
+### Qué es y qué no es esta IA
+
+- **No se entrena ni se afina ningún modelo.** El análisis de pose es geometría (ángulos y alineación) con umbrales calibrados con datos sintéticos; el coach usa reglas, una base de conocimiento propia y, si hay clave, un modelo de lenguaje de un tercero.
+- Los números de calidad (sección "Calidad y evaluación") se miden con poses **sintéticas** y con casos **escritos a mano**. No equivalen a precisión sobre personas reales ni a una evaluación clínica.
+- El coach no diagnostica ni sustituye a un profesional de la salud.
+
 ### Errores de validación
 
 Los cuerpos inválidos devuelven `422 Unprocessable Entity` con el detalle de FastAPI (por ejemplo, un ejercicio desconocido, coordenadas fuera de rango o una pregunta de más de 500 caracteres).
+
+## Calidad y evaluación
+
+### Base de conocimiento (`app/knowledge.py`)
+
+Cerca de 35 fichas escritas a mano (técnica, errores frecuentes, progresión y seguridad de los cinco ejercicios, más calentamiento, respiración, descanso, agujetas, frecuencia y nutrición básica). Se recuperan por palabras clave con BM25 (sin dependencias ni embeddings; ignora tildes, mayúsculas y plurales). La ficha más relevante abre la respuesta por reglas y, con modelo, hasta tres fichas viajan en un bloque `<conocimiento>` del prompt con la instrucción de apoyarse en ellas y no inventar cifras. El dolor se atiende antes y nunca pasa por la base ni por el modelo. Es orientación general; las fichas las revisa una persona al editarlas, no hay verificación automática de su contenido.
+
+### Calibración del análisis de pose (`evals/pose_synth.py`, `evals/pose_eval.py`)
+
+`pose_synth` genera de forma reproducible (semilla fija) poses buenas y malas por ejercicio: el ángulo o desvío verdadero sale de rangos de referencia de entrenamiento (no de los umbrales del analizador), con encuadres 16:9, 9:16, 4:3 y 1:1, orientación y lado aleatorios, ruido gaussiano de landmark (0,8 % del lado menor), confianzas entre 0,6 y 0,99 y landmarks irrelevantes. Entre clase buena y mala hay una franja de guarda sin etiquetar. `pose_eval` reporta precisión y recall por clase, falsos positivos sobre poses buenas y omisión de las malas; con `--sweep` barre cada umbral.
+
+Resultado con 300 muestras por clase (5 100 en total, `python -m evals.pose_eval`):
+
+| Ejercicio.dimensión | Falsos positivos (poses buenas) | Omisión (poses malas) |
+| --- | --- | --- |
+| `squat.knee` | 2,7 % | 0,2 % |
+| `lunge.knee` | 2,3 % | 2,5 % |
+| `push_up.elbow` | 0,2 % | 0,3 % |
+| `push_up.line` | 0,0 % | 0,0 % |
+| `plank.line` | 0,0 % | 0,0 % |
+| `deadlift.hinge` | 0,0 % | 2,0 % |
+
+F1 macro 0,991 y ningún frame limpio sin analizar. Con más ruido de landmark (1,5 %) el F1 macro baja a 0,976 y con 2,5 % a 0,928. El barrido mostró que los umbrales de sentadilla, flexión, plancha y peso muerto ya estaban en el óptimo; los de la zancada (80°–100°) eran demasiado estrechos (25,7 % de falsos positivos) y pasaron a 70°–110°. Además se corrigió un mínimo de segmento en píxeles absolutos que dejaba sin analizar poses válidas cuando `frame_width`/`frame_height` eran una proporción (ahora es relativo al encuadre).
+
+Límites: son frames estáticos en la pose de interés (el fondo de la repetición); no se mide el movimiento, ni la detección de MediaPipe sobre personas reales, y las franjas de guarda son discutibles incluso para un entrenador. Un frame de pie en la sentadilla recibe el aviso de bajar más porque `/analyze` evalúa cada frame por separado. Afinar con datos reales exigiría vídeos etiquetados por entrenadores.
+
+### Evaluación del coach (`evals/coach_cases.py`, `evals/coach_eval.py`)
+
+45 casos (dolor, técnica de los cinco ejercicios, descanso y progresión, nutrición, intentos de manipulación, conversación) con criterios automáticos: español, de 40 a 900 caracteres, máximo 8 frases, sin jerga, sin emojis, sin "como IA", sin jerga técnica opaca; ante dolor, parar y consultar sin consejos de entrenamiento; en nutrición, aviso de que no es consejo médico y nunca menos de 1200 kcal; ante manipulación, no filtrar instrucciones y volver al entrenamiento. Offline (solo reglas): 45/45, latencia p50 menor a 1 ms. Los casos y criterios los escribió el mismo equipo que las reglas: sirven como regresión de seguridad y tono, no como medida independiente de utilidad. Con `--live` se corre lo mismo contra el proveedor configurado (sin clave lo indica y no falla). La ruta del modelo se prueba en `tests/test_coach_eval.py` con un transporte simulado: respuesta correcta, jerga, proveedor caído o con error 503, el dolor no llega al modelo y el prompt lleva las fichas. No se ha ejecutado contra un proveedor real en esta versión (no había clave).
+
+## Contrato para web y app móvil
+
+La web y la app móvil **no llaman a este servicio**: hablan con el backend Java, que reenvía a la IA con `X-Internal-Token`. Si la IA cae o no responde, el backend responde por su cuenta (reglas locales más simples) sin error. Contrato estable (los cambios son solo aditivos):
+
+| Cliente -> backend | Se reenvía a la IA | Lo que recibe el cliente |
+| --- | --- | --- |
+| `POST /api/auth/guest` `{"name":"Ana"}` | no | `{"token": "<JWT>", "user": {...}}` |
+| STOMP `SEND /app/pose` (con `Authorization: Bearer <JWT>` en `CONNECT`) | `POST /analyze` | mensajes en `/topic/feedback.{session_id}` |
+| `POST /api/coach` `{"question", "profile"?, "history"?}` con `Authorization: Bearer` | `POST /coach` | `{"answer": "...", "source": "claude" o "rules"}` |
+| `POST /api/sessions` `{exercise, reps, accuracy, durationSeconds, avgAngles}` | no | `201` con el resumen guardado |
+
+Frame por STOMP (misma forma que `/analyze`):
+
+```json
+{"exercise": "squat", "session_id": "partida-42", "frame_width": 1280, "frame_height": 720,
+ "points": [{"name": "left_hip", "x": 0.5, "y": 0.3, "confidence": 0.9},
+            {"name": "left_knee", "x": 0.5, "y": 0.55, "confidence": 0.9},
+            {"name": "left_ankle", "x": 0.4, "y": 0.8, "confidence": 0.9}]}
+```
+
+Mensaje que llega a `/topic/feedback.partida-42`:
+
+```json
+{"type": "feedback", "score": 88.1, "message": "Buena posición: mantén el control y respira de forma constante.",
+ "feedback": ["Buena posición: mantén el control y respira de forma constante."],
+ "phase": "bottom", "reps": 2, "state": "WARMUP", "exercise": "squat"}
+```
+
+Garantías de la IA que los clientes pueden asumir: `/analyze` y `/coach` no devuelven 500 (un fallo interno da un frame no analizado o una respuesta por reglas), `message` es una sola frase, `source` solo vale `claude` o `rules`, y los campos nuevos se añaden como opcionales. `tests/test_contract.py` fija estos campos y valores.
+
+Verificado de punta a punta en local (backend Spring Boot con PostgreSQL + esta IA): con el secreto compartido distinto la IA responde `401`, el backend avisa en su log (sin imprimir el secreto) y contesta por reglas durante 5 s; con la IA apagada el backend responde en menos de 100 ms con su fallback; con un proveedor de modelo que no conecta, la IA contesta por reglas tras como máximo 1,5 s y el disyuntor evita esperar de nuevo durante 60 s. En Windows, `http://localhost:8000` suma ~200 ms por conexión nueva (resuelve `::1` primero): usa `127.0.0.1`. El `ConnectionResetError ... _ProactorBasePipeTransport` de uvicorn en Windows es ruido de cierre de conexión y no ocurre en el contenedor Linux.
 
 ## Autenticación
 
