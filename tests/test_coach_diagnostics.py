@@ -15,12 +15,15 @@ class HealthTests(unittest.TestCase):
     def test_reports_which_models_are_configured_without_leaking_keys(self) -> None:
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "gsk_secret", "ANTHROPIC_API_KEY": ""}, clear=False):
             body = client.get("/health").json()
-        self.assertEqual(body, {"status": "ok", "coach": "llm"})
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["coach"]["mode"], "llm")
+        self.assertTrue(body["coach"]["llm"]["configured"])
+        self.assertFalse(body["coach"]["claude"]["configured"])
         self.assertNotIn("gsk_secret", str(body))
 
     def test_reports_rules_when_no_key_is_set(self) -> None:
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "", "ANTHROPIC_API_KEY": ""}, clear=False):
-            self.assertEqual(client.get("/health").json()["coach"], "reglas")
+            self.assertEqual(client.get("/health").json()["coach"]["mode"], "rules")
 
 
 class FriendlyRulesTests(unittest.TestCase):
