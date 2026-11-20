@@ -1,12 +1,22 @@
 import os
 from contextlib import asynccontextmanager
+from threading import Lock
 from math import acos, degrees, hypot, isfinite
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, FastAPI
 from pydantic import BaseModel, Field, StringConstraints
 
-from app.coach import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, CoachAnswer, CoachContext, LlmConfig, answer_coach
+from app.coach import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    CoachAnswer,
+    CoachContext,
+    LlmConfig,
+    answer_coach,
+    coach_status,
+)
+from app.lru import LRUCache
 from app.reps import Phase, RepSessionStore
 from app.security import require_shared_secret, warn_if_unprotected
 
@@ -25,6 +35,7 @@ sessions = RepSessionStore()
 
 Exercise = Literal["squat", "push_up", "plank", "deadlift", "lunge"]
 MINIMUM_CONFIDENCE = 0.55
+SESSION_CACHE = 500
 # Ángulo principal (clave de `angles`) que alimenta el contador de repeticiones.
 PRIMARY_ANGLE_KEYS: dict[str, str] = {
     "squat": "knee",
@@ -135,15 +146,26 @@ def line_deviation(
     return round(distance / line_length, 3)
 
 
+def _coach_config() -> tuple[str | None, LlmConfig | None]:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
+    llm_key = os.environ.get("LLM_API_KEY", "").strip()
+    llm = (
+        LlmConfig(
+            api_key=llm_key,
+            base_url=os.environ.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL,
+            model=os.environ.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
+        )
+        if llm_key
+        else None
+    )
+    return api_key, llm
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    # Solo indica si hay un modelo de lenguaje configurado; nunca expone claves ni nombres de proveedor.
-    configured = [
-        name
-        for name, variable in (("claude", "ANTHROPIC_API_KEY"), ("llm", "LLM_API_KEY"))
-        if os.environ.get(variable, "").strip()
-    ]
-    return {"status": "ok", "coach": "+".join(configured) if configured else "reglas"}
+def health() -> dict[str, object]:
+    """Siempre abierto y sin llamadas externas: solo informa qué proveedores del coach hay y si están en pausa."""
+    api_key, llm = _coach_config()
+    return {"status": "ok", "coach": coach_status(api_key, llm)}
 
 
 JOINT_LABELS = {
@@ -156,6 +178,42 @@ JOINT_LABELS = {
 }
 
 
+GOOD_FORM = "Buena posición, así vas bien. Sigue controlado y respira constante."
+# Segunda formulación de cada aviso, para no repetir la misma frase frame tras frame.
+ALTERNATIVES: dict[str, str] = {
+    "Baja un poco más: cadera atrás y talones firmes en el piso.": "Un poquito más abajo, empuja la cadera hacia atrás.",
+    "Reduce la profundidad: sube un poquito y controla la bajada.": "Muy abajo: sube un poco y baja más despacio.",
+    "Baja un poco más, controlando la rodilla de adelante.": "Dale, baja un poco más con la rodilla de adelante firme.",
+    "Reduce la profundidad: la rodilla debe quedar sobre el pie.": "Menos profundo: cuida que la rodilla quede sobre el pie.",
+    "Baja más el pecho: flexiona los codos hasta unos 90 grados.": "Acércate más al piso doblando los codos.",
+    "Reduce la profundidad: no bajes tanto y mantén los hombros firmes.": "Sube un poco: no bajes tanto y cuida los hombros.",
+    "Cuerpo en línea recta: no dejes caer ni subas la cadera.": "Cadera a la altura de los hombros, como una tabla.",
+    "Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.": "Aprieta abdomen y glúteos: cuerpo recto como una tabla.",
+    "Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.": "Empuja la cadera hacia atrás y baja el torso, rodillas suaves.",
+    "Reduce la inclinación: sube un poco el torso y deja la espalda firme.": "Sube un poco el torso y mantén la espalda recta.",
+    GOOD_FORM: "¡Muy bien, así mismo! Mantén ese ritmo.",
+}
+_last_message: LRUCache[str, tuple[str, int]] = LRUCache(SESSION_CACHE)
+_message_lock = Lock()
+
+
+def vary_repeats(session_id: str | None, response: PoseResponse) -> PoseResponse:
+    """Si el aviso principal se repite en la misma sesión, alterna la formulación (sin cambiar el fondo)."""
+    if session_id is None or not response.analyzed or not response.feedback:
+        return response
+    primary = response.feedback[0]
+    base = next((key for key, alt in ALTERNATIVES.items() if primary in (key, alt)), primary)
+    with _message_lock:
+        previous = _last_message.get(session_id)
+        count = previous[1] + 1 if previous and previous[0] == base else 0
+        _last_message.set(session_id, (base, count))
+    alternative = ALTERNATIVES.get(base)
+    chosen = base if alternative is None or count % 2 == 0 else alternative
+    if chosen == primary:
+        return response
+    return response.model_copy(update={"feedback": [chosen, *response.feedback[1:]], "message": chosen})
+
+
 def _not_analyzed(
     confidence: float,
     joints: tuple[str, ...],
@@ -165,17 +223,16 @@ def _not_analyzed(
     visible_names = ", ".join(JOINT_LABELS[name] for name in joints)
     if overlapping:
         feedback = [
-            f"Los puntos de {visible_names} se solapan en la imagen: aléjate de la cámara "
-            "o revisa que se vea el cuerpo completo."
+            f"No te veo bien: aléjate un poco de la cámara para que se vea todo el cuerpo."
         ]
     else:
-        feedback = [f"Colócate dentro del encuadre y mantén visibles: {visible_names}."]
+        feedback = [f"No alcanzo a verte: colócate de lado y que se vean {visible_names}."]
     response = PoseResponse(
         score=0,
         feedback=feedback,
         confidence=confidence,
         analyzed=False,
-        message=" ".join(feedback),
+        message=feedback[0],
     )
     return response, None
 
@@ -211,8 +268,11 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
 
     width, height = request.frame_width, request.frame_height
     angles: dict[str, float] = {}
-    corrections: list[str] = []
-    deduction = 0.0
+    found: list[tuple[float, str]] = []
+
+    def add(text: str, excess: float, weight: float, cap: float) -> None:
+        found.append((min(cap, excess * weight), text))
+
     knee_angle: float | None = None
 
     if request.exercise == "squat":
@@ -221,11 +281,9 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 115:
-            corrections.append("Baja un poco más y mantén los talones apoyados.")
-            deduction += min(55, (knee_angle - 115) * 0.65)
+            add("Baja un poco más: cadera atrás y talones firmes en el piso.", knee_angle - 115, 0.65, 55)
         elif knee_angle < 65:
-            corrections.append("Reduce la profundidad y mantén el movimiento controlado.")
-            deduction += min(40, (65 - knee_angle) * 0.7)
+            add("Reduce la profundidad: sube un poquito y controla la bajada.", 65 - knee_angle, 0.7, 40)
 
     elif request.exercise == "lunge":
         knee_angle = angle(*selected, width, height)
@@ -233,11 +291,9 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 100:
-            corrections.append("Baja un poco más controlando la rodilla delantera.")
-            deduction += min(45, (knee_angle - 100) * 0.6)
+            add("Baja un poco más, controlando la rodilla de adelante.", knee_angle - 100, 0.6, 45)
         elif knee_angle < 80:
-            corrections.append("Reduce la profundidad y mantén la rodilla alineada con el pie.")
-            deduction += min(40, (80 - knee_angle) * 0.7)
+            add("Reduce la profundidad: la rodilla debe quedar sobre el pie.", 80 - knee_angle, 0.7, 40)
 
     elif request.exercise == "push_up":
         elbow_angle = angle(*selected, width, height)
@@ -245,19 +301,16 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["elbow"] = elbow_angle
         if elbow_angle > 110:
-            corrections.append("Baja con control y flexiona los codos en un rango cómodo.")
-            deduction += min(35, (elbow_angle - 110) * 0.35)
+            add("Baja más el pecho: flexiona los codos hasta unos 90 grados.", elbow_angle - 110, 0.35, 35)
         elif elbow_angle < 65:
-            corrections.append("Reduce la profundidad y mantén los hombros estables.")
-            deduction += min(35, (65 - elbow_angle) * 0.7)
+            add("Reduce la profundidad: no bajes tanto y mantén los hombros firmes.", 65 - elbow_angle, 0.7, 35)
         alignment = select_joints(by_name, ("shoulder", "hip", "ankle"))
         if alignment is not None:
             deviation = line_deviation(*alignment, width, height)
             if deviation is not None:
                 angles["body_line_deviation"] = deviation
                 if deviation > 0.1:
-                    corrections.append("Mantén hombros, cadera y tobillos en línea recta.")
-                    deduction += min(40, (deviation - 0.1) * 120)
+                    add("Cuerpo en línea recta: no dejes caer ni subas la cadera.", deviation - 0.1, 120, 40)
 
     elif request.exercise == "plank":
         deviation = line_deviation(*selected, width, height)
@@ -265,8 +318,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["body_line_deviation"] = deviation
         if deviation > 0.08:
-            corrections.append("Alinea hombros, cadera y tobillos en línea recta.")
-            deduction += min(55, (deviation - 0.08) * 150)
+            add("Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.", deviation - 0.08, 150, 55)
 
     else:
         hip_angle = angle(*selected, width, height)
@@ -274,14 +326,16 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["hip_hinge"] = hip_angle
         if hip_angle > 145:
-            corrections.append("Lleva la cadera atrás e inclina el torso con las rodillas ligeramente flexionadas.")
-            deduction += min(45, (hip_angle - 145) * 0.8)
+            add("Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.", hip_angle - 145, 0.8, 45)
         elif hip_angle < 45:
-            corrections.append("Reduce la inclinación y mantén la espalda estable.")
-            deduction += min(45, (45 - hip_angle) * 0.8)
+            add("Reduce la inclinación: sube un poco el torso y deja la espalda firme.", 45 - hip_angle, 0.8, 45)
 
+    # Prioridad: la corrección que más puntos resta va primero y es la única que se dice en voz alta.
+    found.sort(key=lambda item: -item[0])
+    deduction = sum(points for points, _ in found)
+    corrections = [text for _, text in found]
     if not corrections:
-        corrections.append("Buena posición. Muévete con control y mantén una respiración constante.")
+        corrections.append(GOOD_FORM)
 
     score = round(max(0.0, min(100.0, overall_confidence * 100 - deduction)), 2)
     primary_key = PRIMARY_ANGLE_KEYS.get(request.exercise)
@@ -293,7 +347,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
         angles=angles,
         confidence=overall_confidence,
         analyzed=True,
-        message=" ".join(corrections),
+        message=corrections[0],
     )
     return response, primary_angle
 
@@ -307,22 +361,13 @@ def analyze(request: PoseRequest) -> PoseResponse:
 def analyze_endpoint(request: PoseRequest) -> PoseResponse:
     response, primary_angle = evaluate(request)
     update = sessions.update(request.session_id, request.exercise, primary_angle)
-    return response.model_copy(update={"phase": update.phase, "reps": update.reps})
+    response = response.model_copy(update={"phase": update.phase, "reps": update.reps})
+    return vary_repeats(request.session_id, response)
 
 
 @protected.post("/coach", response_model=CoachAnswer)
 def coach(request: CoachRequest) -> CoachAnswer:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
-    llm_key = os.environ.get("LLM_API_KEY", "").strip()
-    llm = (
-        LlmConfig(
-            api_key=llm_key,
-            base_url=os.environ.get("LLM_BASE_URL", "").strip() or DEFAULT_LLM_BASE_URL,
-            model=os.environ.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
-        )
-        if llm_key
-        else None
-    )
+    api_key, llm = _coach_config()
     return answer_coach(request.question, request.context, api_key, llm=llm)
 
 
