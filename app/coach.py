@@ -710,7 +710,7 @@ def rule_based_answer(question: str, context: CoachContext | None = None) -> str
         return WARMUP_ADVICE
     if _mentions(text, HOME_STEMS):
         return HOME_ADVICE
-    if _mentions(text, BEGINNER_STEMS):
+    if question_exercise is None and _mentions(text, BEGINNER_STEMS):
         return BEGINNER_ADVICE
     if question_exercise is None and _mentions(text, APP_STEMS):
         return APP_REPLY
