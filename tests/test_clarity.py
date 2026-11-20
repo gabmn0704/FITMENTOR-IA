@@ -89,7 +89,7 @@ class ThresholdTests(unittest.TestCase):
     def test_unseen_body_gives_a_friendly_instruction(self) -> None:
         result = analyze(PoseRequest(exercise="squat", points=[Point(name="hip", x=0.5, y=0.1, confidence=0.1)]))
         self.assertFalse(result.analyzed)
-        self.assertIn("No alcanzo a verte", result.message)
+        self.assertIn("No se detecta tu cuerpo", result.message)
 
     def test_every_exercise_gives_a_message(self) -> None:
         cases = {
@@ -215,8 +215,9 @@ class ResilienceTests(unittest.TestCase):
 
 
 class CoachPersonalizationTests(unittest.TestCase):
-    def test_prompt_is_structured_and_colombian(self) -> None:
-        self.assertIn("colombiano", SYSTEM_PROMPT)
+    def test_prompt_is_structured_and_neutral(self) -> None:
+        self.assertIn("neutro", SYSTEM_PROMPT)
+        self.assertIn("jerga", SYSTEM_PROMPT)
         self.assertIn("arepa", SYSTEM_PROMPT)
         self.assertIn("lesiones", SYSTEM_PROMPT)
         self.assertIn("de dos a cinco frases", SYSTEM_PROMPT)
@@ -241,7 +242,7 @@ class CoachPersonalizationTests(unittest.TestCase):
         answer_coach("¿Qué rutina hago?", context, llm=LlmConfig(api_key="k"), transport=httpx.MockTransport(handler))
         self.assertIn("hombro", seen["content"])
 
-    def test_colombian_nutrition_rules_answer(self) -> None:
+    def test_local_food_nutrition_rules_answer(self) -> None:
         answer = rule_based_answer("¿Qué debo comer para ganar músculo?")
         self.assertIn("arepa", answer)
         self.assertIn("frijoles", answer)

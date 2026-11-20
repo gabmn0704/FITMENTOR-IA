@@ -33,8 +33,10 @@ MAX_ANSWER_CHARS = 900
 
 SYSTEM_PROMPT = (
     "Eres el coach de FitMentor, una app de entrenamiento con corrección de postura. Hablas en español "
-    "colombiano natural, de tú, como un entrenador cercano que motiva: claro, directo y sin sonar a "
-    "robot. Nunca digas \"como asistente\" ni \"como IA\" ni empieces con relleno; ve al grano. "
+    "neutro, de tú, con un tono profesional, claro y motivador, como un entrenador personal certificado. "
+    "Prohibido usar jerga, modismos regionales, groserías o expresiones coloquiales; usa un vocabulario "
+    "que entienda cualquier hispanohablante. Nunca digas \"como asistente\" ni \"como IA\" ni empieces "
+    "con relleno; ve al grano. "
     "Formato: primero una frase con la respuesta directa; luego, si hace falta, de dos a cinco frases "
     "cortas o hasta tres viñetas con \"- \" con los pasos concretos (qué cambiar o hacer hoy); cierra con "
     "una línea breve de ánimo o el siguiente paso. Sin títulos ni párrafos largos. "
@@ -44,7 +46,7 @@ SYSTEM_PROMPT = (
     "sigue el hilo y no repitas lo ya dicho. Usa las métricas de la sesión (precisión, repeticiones, "
     "ángulo medio, nivel) cuando aparezcan y adapta el consejo al nivel: principiante (técnica básica y "
     "descansos), intermedio (volumen y tempo), avanzado (carga y tempo controlado). "
-    "Nutrición: da ejemplos de comida colombiana real y económica (huevos, pollo o pechuga, carne magra, "
+    "Nutrición: da ejemplos de comida latinoamericana real y económica (huevos, pollo o pechuga, carne magra, "
     "pescado, frijoles, lentejas, garbanzos, arroz, arepa, plátano, yuca, papa, avena, aguacate, frutas "
     "como banano, guayaba o mango, jugos sin azúcar añadida) con porciones aproximadas; si es vegetariano, "
     "usa huevo, lácteos, legumbres y tofu. "
@@ -144,7 +146,7 @@ MEAN_ANGLE_HINTS: dict[str, tuple[float, float, str, str]] = {
     "deadlift": (
         60,
         160,
-        "Casi no inclinas la cadera: lleva el culo hacia atrás en cada repetición.",
+        "Casi no inclinas la cadera: llévala hacia atrás en cada repetición.",
         "Inclinas demasiado el torso: reduce la inclinación y mantén la espalda estable.",
     ),
 }
@@ -301,9 +303,9 @@ OFF_TOPIC_REPLY = (
     "progresión o nutrición básica."
 )
 GREETING_REPLIES = (
-    "¡Hola! Qué bueno verte por aquí. ¿Qué quieres trabajar hoy: tu técnica, tu rutina o lo que vas a comer?",
+    "¡Hola! Me alegra verte por aquí. ¿Qué quieres trabajar hoy: tu técnica, tu rutina o tu alimentación?",
     "¡Buenas! Cuéntame cómo vas: ¿entrenaste hoy o estás por empezar? Con eso te digo por dónde seguir.",
-    "¡Hey, hola! Estoy listo para ayudarte. ¿Tienes alguna duda de un ejercicio, de tu plan o de la comida?",
+    "¡Hola! Estoy listo para ayudarte. ¿Tienes alguna duda sobre un ejercicio, tu plan o tu alimentación?",
     "¡Hola! Aquí estoy. Dime qué necesitas y lo vemos: postura, repeticiones, descanso o alimentación.",
 )
 GREETING_REPLY = GREETING_REPLIES[0]
@@ -374,7 +376,7 @@ SHORT_TIME_STEMS = ("15 min", "10 min", "20 min", "30 min", "poco tiempo", "rapi
 THANKS_REPLY = "¡De nada! Aquí estoy para lo que necesites: técnica, rutinas, descansos o progresión."
 GOODBYE_REPLY = "¡Hasta pronto! Descansa bien, hidrátate y vuelve cuando quieras entrenar."
 HELP_REPLY = (
-    "Estoy bien, ¡gracias por preguntar! Puedo ayudarte con tu técnica en sentadilla, flexión, plancha, "
+    "Gracias por preguntar. Puedo ayudarte con tu técnica en sentadilla, flexión, plancha, "
     "peso muerto y zancada, armarte una rutina, explicarte descansos, calentamiento, progresión de nivel "
     "y nutrición básica. Cuéntame qué quieres lograr."
 )
@@ -827,6 +829,44 @@ def clip_answer(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
     return head.rstrip()
 
 
+# Jerga y coloquialismos que el coach nunca debe usar. Se comparan como palabra completa sobre el
+# texto normalizado (sin tildes). Si un modelo los usa, su respuesta se descarta y se usan las reglas.
+SLANG_WORDS = (
+    "parce",
+    "parcero",
+    "parcera",
+    "quiubo",
+    "quibo",
+    "chimba",
+    "bacano",
+    "bacana",
+    "berraco",
+    "berraca",
+    "marica",
+    "guevon",
+    "huevon",
+    "wey",
+    "guey",
+    "chamo",
+    "boludo",
+    "pibe",
+    "culo",
+    "vaina",
+    "nea",
+    "nero",
+    "mijo",
+    "mija",
+    "bro",
+    "papi",
+    "mami",
+)
+
+
+def has_slang(text: str) -> bool:
+    """True si el texto contiene jerga o coloquialismos prohibidos en el tono del coach."""
+    return _has_word(_key(text), SLANG_WORDS)
+
+
 def describe_failure(error: Exception) -> str:
     """Resumen del fallo de un proveedor para los registros: código HTTP o tipo de error, sin datos sensibles."""
     if isinstance(error, httpx.HTTPStatusError):
@@ -936,6 +976,11 @@ def answer_coach(
                 # Se degrada al siguiente proveedor; solo se registra el tipo de fallo, nunca la clave ni el cuerpo.
                 logger.warning("El proveedor %s no respondió (%s)", name, describe_failure(error))
                 breaker.failure(name)
+                continue
+            if text and has_slang(text):
+                # Respuesta válida técnicamente pero fuera del tono: se intenta el siguiente proveedor.
+                logger.warning("El proveedor %s respondió con jerga; se descarta la respuesta", name)
+                breaker.success(name)
                 continue
             if text:
                 breaker.success(name)

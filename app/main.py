@@ -178,20 +178,20 @@ JOINT_LABELS = {
 }
 
 
-GOOD_FORM = "Buena posición, así vas bien. Sigue controlado y respira constante."
+GOOD_FORM = "Buena posición: mantén el control y respira de forma constante."
 # Segunda formulación de cada aviso, para no repetir la misma frase frame tras frame.
 ALTERNATIVES: dict[str, str] = {
-    "Baja un poco más: cadera atrás y talones firmes en el piso.": "Un poquito más abajo, empuja la cadera hacia atrás.",
-    "Reduce la profundidad: sube un poquito y controla la bajada.": "Muy abajo: sube un poco y baja más despacio.",
-    "Baja un poco más, controlando la rodilla de adelante.": "Dale, baja un poco más con la rodilla de adelante firme.",
-    "Reduce la profundidad: la rodilla debe quedar sobre el pie.": "Menos profundo: cuida que la rodilla quede sobre el pie.",
-    "Baja más el pecho: flexiona los codos hasta unos 90 grados.": "Acércate más al piso doblando los codos.",
-    "Reduce la profundidad: no bajes tanto y mantén los hombros firmes.": "Sube un poco: no bajes tanto y cuida los hombros.",
-    "Cuerpo en línea recta: no dejes caer ni subas la cadera.": "Cadera a la altura de los hombros, como una tabla.",
-    "Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.": "Aprieta abdomen y glúteos: cuerpo recto como una tabla.",
-    "Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.": "Empuja la cadera hacia atrás y baja el torso, rodillas suaves.",
+    "Baja un poco más: cadera atrás y talones firmes en el piso.": "Baja un poco más y lleva la cadera hacia atrás.",
+    "Reduce la profundidad: sube un poco y controla la bajada.": "Bajas demasiado: sube un poco y desciende más despacio.",
+    "Baja un poco más, controlando la rodilla delantera.": "Baja un poco más con la rodilla delantera estable.",
+    "Reduce la profundidad: la rodilla debe quedar sobre el pie.": "Baja menos: mantén la rodilla alineada sobre el pie.",
+    "Baja más el pecho: flexiona los codos hasta unos 90 grados.": "Acerca el pecho al suelo flexionando los codos.",
+    "Reduce la profundidad: no bajes tanto y mantén los hombros firmes.": "Baja menos para proteger los hombros.",
+    "Cuerpo en línea recta: no dejes caer ni subas la cadera.": "Mantén la cadera a la altura de los hombros.",
+    "Alinea hombros, cadera y tobillos en línea recta: aprieta abdomen y glúteos.": "Activa abdomen y glúteos para mantener el cuerpo recto.",
+    "Lleva la cadera atrás e inclina el torso, con las rodillas semiflexionadas.": "Lleva la cadera atrás y baja el torso con las rodillas flexionadas.",
     "Reduce la inclinación: sube un poco el torso y deja la espalda firme.": "Sube un poco el torso y mantén la espalda recta.",
-    GOOD_FORM: "¡Muy bien, así mismo! Mantén ese ritmo.",
+    GOOD_FORM: "Muy bien: mantén este ritmo y esta técnica.",
 }
 _last_message: LRUCache[str, tuple[str, int]] = LRUCache(SESSION_CACHE)
 _message_lock = Lock()
@@ -223,10 +223,10 @@ def _not_analyzed(
     visible_names = ", ".join(JOINT_LABELS[name] for name in joints)
     if overlapping:
         feedback = [
-            f"No te veo bien: aléjate un poco de la cámara para que se vea todo el cuerpo."
+            "No se distingue la postura: aléjate de la cámara para que se vea todo el cuerpo."
         ]
     else:
-        feedback = [f"No alcanzo a verte: colócate de lado y que se vean {visible_names}."]
+        feedback = [f"No se detecta tu cuerpo: colócate de lado para que se vean {visible_names}."]
     response = PoseResponse(
         score=0,
         feedback=feedback,
@@ -283,7 +283,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
         if knee_angle > 115:
             add("Baja un poco más: cadera atrás y talones firmes en el piso.", knee_angle - 115, 0.65, 55)
         elif knee_angle < 65:
-            add("Reduce la profundidad: sube un poquito y controla la bajada.", 65 - knee_angle, 0.7, 40)
+            add("Reduce la profundidad: sube un poco y controla la bajada.", 65 - knee_angle, 0.7, 40)
 
     elif request.exercise == "lunge":
         knee_angle = angle(*selected, width, height)
@@ -291,7 +291,7 @@ def evaluate(request: PoseRequest) -> tuple[PoseResponse, float | None]:
             return _not_analyzed(overall_confidence, required_joints, overlapping=True)
         angles["knee"] = knee_angle
         if knee_angle > 100:
-            add("Baja un poco más, controlando la rodilla de adelante.", knee_angle - 100, 0.6, 45)
+            add("Baja un poco más, controlando la rodilla delantera.", knee_angle - 100, 0.6, 45)
         elif knee_angle < 80:
             add("Reduce la profundidad: la rodilla debe quedar sobre el pie.", 80 - knee_angle, 0.7, 40)
 
