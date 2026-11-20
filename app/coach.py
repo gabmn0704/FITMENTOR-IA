@@ -862,6 +862,11 @@ def ask_llm(
             {"role": "user", "content": _model_prompt(question, context)},
         ],
     }
+    if "gpt-oss" in config.model.lower():
+        # Modelos de razonamiento: el razonamiento gasta tokens de la respuesta. Con esfuerzo bajo y más margen
+        # el texto final no queda vacío ni cortado.
+        payload["reasoning_effort"] = "low"
+        payload["max_tokens"] = LLM_MAX_TOKENS * 3
     headers = {"content-type": "application/json", "authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
     response = _post(url, headers, payload, transport, timeout)
