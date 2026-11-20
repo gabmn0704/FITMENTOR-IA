@@ -15,10 +15,13 @@ from app.coach import (
     CoachAnswer,
     CoachContext,
     LlmConfig,
+    SessionSummary,
+    SessionSummaryRequest,
     answer_coach,
     close_http_client,
     coach_status,
     rule_based_answer,
+    session_summary,
 )
 from app.lru import LRUCache
 from app.reps import Phase, RepSessionStore
@@ -397,6 +400,13 @@ def coach(request: CoachRequest) -> CoachAnswer:
             return CoachAnswer(answer=rule_based_answer(request.question, request.context), source="rules")
         except Exception:
             return CoachAnswer(answer=DEFAULT_TIP, source="rules")
+
+
+
+@protected.post("/session/summary", response_model=SessionSummary)
+def summary_endpoint(request: SessionSummaryRequest) -> SessionSummary:
+    """Resumen de una sesión terminada: instantáneo, por reglas y sin llamar a ningún modelo."""
+    return session_summary(request)
 
 
 app.include_router(protected)

@@ -28,11 +28,13 @@ python -m unittest discover -s tests -v
 
 ## Endpoints
 
-### `GET /health`
+### `GET /health` (también `HEAD`)
 
 ```json
-{ "status": "ok" }
+{ "status": "ok", "coach": { "mode": "claude", "claude": { "configured": true, "paused": false }, "llm": { "configured": true, "paused": false }, "rules": true } }
 ```
+
+No hace llamadas externas ni lee el cuerpo de la petición; `HEAD /health` responde 200 sin cuerpo.
 
 ### `POST /analyze`
 
@@ -65,18 +67,18 @@ Respuesta:
 ```json
 {
   "score": 90.0,
-  "feedback": ["Buena posición. Muévete con control y mantén una respiración constante."],
+  "feedback": ["Buena posición: mantén el control y respira de forma constante."],
   "knee_angle": 96.4,
   "angles": { "knee": 96.4 },
   "confidence": 0.9,
   "analyzed": true,
   "phase": "bottom",
   "reps": 3,
-  "message": "Buena posición. Muévete con control y mantén una respiración constante."
+  "message": "Buena posición: mantén el control y respira de forma constante."
 }
 ```
 
-- `message` es `feedback` unido con espacios.
+- `message` es la corrección principal (`feedback[0]`), siempre una sola frase.
 - `analyzed` es `false` si algún punto requerido tiene confianza menor de 0.55; entonces `score` es 0 y `feedback` pide volver a colocarse en el encuadre.
 - `knee_angle` está presente en `squat` y `lunge`; es `null` en el resto.
 - Si dos puntos de la articulación medida coinciden (ángulo no medible), el frame se marca como no analizado: nunca se devuelve un 0° falso.
@@ -122,7 +124,7 @@ Respuesta:
 { "answer": "En la plancha contrae abdomen y glúteos para que la cadera no caiga ni suba.", "source": "rules" }
 ```
 
-- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 8 s, `max_tokens` 1024 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; solo se usan los bloques `text`). El prompt de sistema fija el rol de coach de técnica, respuestas en español de máximo tres frases, límites de seguridad (dolor → parar y consultar a un profesional; nutrición solo general) y trata la pregunta como datos: va entre `<pregunta>` y las métricas de la sesión entre `<sesion>`. Una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas. `source` es `claude`.
+- Con `ANTHROPIC_API_KEY`, se llama a `claude-haiku-5-5` mediante la API de Anthropic (timeout de 4 s, `max_tokens` 700 porque Haiku 5.5 razona por defecto y ese razonamiento cuenta en el límite, `output_config.effort` = `low`; solo se usan los bloques `text`). El prompt de sistema fija el rol de coach de técnica, respuestas en español de máximo tres frases, límites de seguridad (dolor → parar y consultar a un profesional; nutrición solo general) y trata la pregunta como datos: va entre `<pregunta>` y las métricas de la sesión entre `<sesion>`. Una negativa (`stop_reason: refusal`) o una respuesta vacía pasa a reglas. `source` es `claude`.
 - Sin clave, si la llamada falla o si la respuesta llega vacía, se usan reglas. `source` es `rules`. Las reglas responden según la intención de la pregunta, en este orden:
   1. **Dolor, lesión, mareo u opresión en el pecho** (se detecta antes de llamar a Claude, así que también en modo Claude): se recomienda parar y consultar a un profesional de la salud, sin consejos de entrenamiento. `source` es `rules`.
   2. **Intento de cambiar las instrucciones** (ignora, omite, finge, system prompt, API key, etc.): se redirige al entrenamiento con un consejo del ejercicio actual. Ninguna otra pregunta se trata como ataque.
@@ -130,6 +132,32 @@ Respuesta:
   4. **Descanso**: tiempos entre series y entre sesiones según el nivel, y aviso de consultar si las agujetas persisten o el dolor es agudo.
   5. **Técnica**: consejos por palabra clave (coincidencia al inicio de palabra), por ejercicio y por métricas (precisión por tramos, repeticiones si se preguntan, ángulo medio fuera del rango esperado), siempre con un **siguiente objetivo** según el nivel (repeticiones o segundos y precisión mínima).
   6. **Saludo o pregunta sobre el coach**: presentación breve (con el consejo del ejercicio de contexto si lo hay). Cualquier otra pregunta fuera de tema recibe el consejo general del ejercicio o del entrenamiento, nunca una respuesta vacía.
+
+Tono y robustez:
+
+- Español neutro, profesional y motivador. El prompt prohíbe jerga y coloquialismos; si un modelo responde con jerga (`parce`, `quiubo`, etc.), su respuesta se descarta y se pasa al siguiente proveedor o a reglas.
+- Presupuesto total de 5 s por pregunta (4 s por proveedor y 1,5 s para conectar), disyuntor por proveedor y caché de 10 minutos que ignora tildes, mayúsculas y signos. Las llamadas reutilizan un cliente HTTP compartido (keep-alive).
+- Si ocurre un error inesperado, `/coach` responde por reglas y `/analyze` devuelve un frame no analizado: nunca un 500.
+
+### `POST /session/summary`
+
+Resumen instantáneo de una sesión terminada, por reglas (no llama a ningún modelo). Exige `X-Internal-Token` igual que `/coach`. Todos los campos son opcionales:
+
+```json
+{ "exercise": "squat", "reps": 12, "score": 91, "level": "INTERMEDIATE", "average_angle": 95, "duration_seconds": 300 }
+```
+
+Respuesta:
+
+```json
+{
+  "summary": "Excelente trabajo en tu sesión de sentadilla: 12 repeticiones con 91% de precisión.",
+  "highlights": ["Tu precisión es 91%: muy buena, ahora busca repetir esa forma en cada serie."],
+  "next_goal": "Para tu nivel intermedio, tu siguiente objetivo es 16 repeticiones por serie con precisión de 85% o más."
+}
+```
+
+En `plank` se usa `duration_seconds` en lugar de `reps`. Con 0 repeticiones se sugiere revisar el encuadre de la cámara.
 
 ### Errores de validación
 

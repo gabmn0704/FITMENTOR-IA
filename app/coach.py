@@ -1029,3 +1029,81 @@ def answer_coach(
                     _cache.set(key, (time.monotonic() + CACHE_TTL_SECONDS, text))
                 return CoachAnswer(answer=text, source="claude")
     return CoachAnswer(answer=rule_based_answer(question, context), source="rules")
+
+
+EXERCISE_NAMES: dict[str, str] = {
+    "squat": "sentadilla",
+    "push_up": "flexiones",
+    "plank": "plancha",
+    "deadlift": "peso muerto",
+    "lunge": "zancada",
+}
+
+
+class SessionSummaryRequest(BaseModel):
+    """Métricas finales de una sesión. Todo opcional: con lo que haya se arma el resumen."""
+
+    exercise: str | None = Field(default=None, max_length=40)
+    reps: int | None = Field(default=None, ge=0, le=100_000)
+    score: float | None = Field(default=None, ge=0, le=100)
+    level: str | None = Field(default=None, max_length=40)
+    average_angle: float | None = Field(default=None, ge=0, le=180)
+    duration_seconds: int | None = Field(default=None, ge=0, le=86_400)
+
+
+class SessionSummary(BaseModel):
+    summary: str
+    highlights: list[str]
+    next_goal: str | None = None
+
+
+def _duration_text(seconds: int) -> str:
+    minutes, rest = divmod(seconds, 60)
+    if minutes == 0:
+        return f"{rest} segundos"
+    if rest == 0:
+        return f"{minutes} minuto" + ("s" if minutes != 1 else "")
+    return f"{minutes} min {rest} s"
+
+
+def session_summary(request: SessionSummaryRequest) -> SessionSummary:
+    """Resumen determinista e instantáneo de una sesión terminada (sin llamar a ningún modelo)."""
+    exercise = _canonical_exercise(request.exercise)
+    level = _canonical_level(request.level)
+    name = f"tu sesión de {EXERCISE_NAMES[exercise]}" if exercise else "tu sesión"
+
+    facts: list[str] = []
+    if exercise == "plank" and request.duration_seconds:
+        facts.append(f"{_duration_text(request.duration_seconds)} de plancha")
+    elif request.reps is not None:
+        facts.append(f"{request.reps} repetici" + ("ón" if request.reps == 1 else "ones"))
+    if request.score is not None:
+        facts.append(f"{round(request.score)}% de precisión")
+    detail = f": {' con '.join(facts)}" if facts else ""
+
+    if request.reps == 0 and exercise != "plank":
+        opening = f"Completaste {name} sin repeticiones registradas"
+    elif request.score is None:
+        opening = f"Completaste {name}"
+    elif request.score >= 85:
+        opening = f"Excelente trabajo en {name}"
+    elif request.score >= 60:
+        opening = f"Buen trabajo en {name}"
+    else:
+        opening = f"Terminaste {name}, y cada sesión suma"
+    summary = f"{opening}{detail}."
+
+    context = CoachContext(score=request.score, average_angle=request.average_angle)
+    highlights = [
+        note
+        for note in (_performance_note(context), _angle_note(context, exercise))
+        if note
+    ]
+    if request.reps == 0 and exercise != "plank":
+        highlights.insert(
+            0, "Si hiciste repeticiones y no se contaron, colócate de lado con el cuerpo completo visible y buena luz."
+        )
+    if not highlights:
+        highlights.append("Mantén la técnica controlada y la respiración constante en la próxima sesión.")
+    next_goal = _next_goal(exercise, level) if exercise else None
+    return SessionSummary(summary=summary, highlights=highlights[:3], next_goal=next_goal)
